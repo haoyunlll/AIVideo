@@ -1280,18 +1280,41 @@ function CharacterCard({
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
 
-  // 获取图片 URL
+  // 获取图片 URL（本机 MinIO 直链常 403，统一转成 /api/images 代理）
   useEffect(() => {
-    // 优先使用直接存储的 imageUrl（如果它是完整的公网 URL）
-    if (character.imageUrl && character.imageUrl.startsWith('http')) {
-      setImageUrl(character.imageUrl)
-      return
+    const resolveUrl = (url?: string | null, key?: string | null) => {
+      if (url) {
+        // 本机 MinIO / localhost 对象存储 → 走代理
+        if (
+          url.includes('127.0.0.1') ||
+          url.includes('localhost') ||
+          url.includes(':9000/')
+        ) {
+          try {
+            const u = new URL(url)
+            const bucket = 'drama-studio'
+            let pathname = u.pathname.replace(/^\/+/, '')
+            if (pathname.startsWith(`${bucket}/`)) {
+              pathname = pathname.slice(bucket.length + 1)
+            }
+            if (pathname) return `/api/images?key=${encodeURIComponent(pathname)}`
+          } catch {
+            // fall through
+          }
+        }
+        if (url.startsWith('http') || url.startsWith('/api/images') || url.startsWith('/')) {
+          return url
+        }
+        return `/api/images?key=${encodeURIComponent(url)}`
+      }
+      if (key) {
+        if (key.startsWith('http')) return resolveUrl(key)
+        return `/api/images?key=${encodeURIComponent(key)}`
+      }
+      return null
     }
 
-    // 如果有 frontViewKey，使用 /api/images 获取图片（现在是重定向）
-    if (character.frontViewKey) {
-      setImageUrl(`/api/images?key=${character.frontViewKey}`)
-    }
+    setImageUrl(resolveUrl(character.imageUrl, character.frontViewKey))
   }, [character.frontViewKey, character.imageUrl])
 
   return (
@@ -1407,18 +1430,40 @@ function AppearanceCard({
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
 
-  // 获取图片 URL
+  // 获取图片 URL（本机 MinIO 直链常 403，统一转成 /api/images 代理）
   useEffect(() => {
-    // 优先使用直接存储的 imageUrl（如果它是完整的公网 URL）
-    if (appearance.imageUrl && appearance.imageUrl.startsWith('http')) {
-      setImageUrl(appearance.imageUrl)
-      return
+    const resolveUrl = (url?: string | null, key?: string | null) => {
+      if (url) {
+        if (
+          url.includes('127.0.0.1') ||
+          url.includes('localhost') ||
+          url.includes(':9000/')
+        ) {
+          try {
+            const u = new URL(url)
+            const bucket = 'drama-studio'
+            let pathname = u.pathname.replace(/^\/+/, '')
+            if (pathname.startsWith(`${bucket}/`)) {
+              pathname = pathname.slice(bucket.length + 1)
+            }
+            if (pathname) return `/api/images?key=${encodeURIComponent(pathname)}`
+          } catch {
+            // fall through
+          }
+        }
+        if (url.startsWith('http') || url.startsWith('/api/images') || url.startsWith('/')) {
+          return url
+        }
+        return `/api/images?key=${encodeURIComponent(url)}`
+      }
+      if (key) {
+        if (key.startsWith('http')) return resolveUrl(key)
+        return `/api/images?key=${encodeURIComponent(key)}`
+      }
+      return null
     }
 
-    // 如果有 imageKey，使用 /api/images 获取图片（现在是重定向）
-    if (appearance.imageKey) {
-      setImageUrl(`/api/images?key=${appearance.imageKey}`)
-    }
+    setImageUrl(resolveUrl(appearance.imageUrl, appearance.imageKey))
   }, [appearance.imageKey, appearance.imageUrl])
 
   return (

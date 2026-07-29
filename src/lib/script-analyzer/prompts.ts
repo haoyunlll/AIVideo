@@ -9,6 +9,8 @@
  * 5. 输出格式稳定：明确格式约束 + 禁止中文引号 + 所有字段不可为空
  */
 
+import { SCENE_STATE_CONTINUITY_RULES } from '@/lib/scene-continuity'
+
 // ============================================================
 // 第一阶段：全局扫描
 // ============================================================
@@ -124,7 +126,14 @@ export function buildPhase2SystemPrompt(context: {
   currentSceneName: string
   currentChunkIndex: number
   totalChunks: number
-  recentScenesSummary: Array<{ sceneNumber: number; title: string; characters: string[]; emotion: string }>
+  recentScenesSummary: Array<{
+    sceneNumber: number
+    title: string
+    characters: string[]
+    emotion: string
+    endingAction?: string
+    endState?: string
+  }>
   styleContext: string
 }): string {
   const {
@@ -154,7 +163,7 @@ ${characterTable}`
       ? recentScenesSummary
           .map(
             s =>
-              `分镜${s.sceneNumber}：《${s.title}》 | 出场：${s.characters.join('、') || '无'} | 情绪：${s.emotion || '无'}`
+              `分镜${s.sceneNumber}：《${s.title}》 | 出场：${s.characters.join('、') || '无'} | 情绪：${s.emotion || '无'}${s.endState ? ` | 收束状态：${s.endState}` : s.endingAction ? ` | 收束动作：${s.endingAction}` : ''}`
           )
           .join('\n')
       : '（这是第一段，没有已完成的分镜）'
@@ -265,10 +274,15 @@ ${recentScenes}
 - 禁止："美丽的风景""温馨的房间"等空洞描述
 - 改为："午后阳光从木格窗斜射进来，照亮了老槐木桌上的青瓷茶具，空气中飘着细尘"
 
-### 原则四：与已完成分镜保持连贯
+### 原则四：与已完成分镜保持连贯（动作与身体状态接力）
 - 注意人物服饰、位置的连续性
 - 情绪变化要有自然的过渡和积累
 - 同一空间内的相邻分镜要有合理的视线衔接
+- **上一镜 endState 必须 = 下一镜 startState**（握姿、出鞘进度、站姿/冲刺、朝向必须一致）
+- 下一镜 \`action\` 写成「起态→过程→终态」，第一句承接上一镜收束，禁止无过渡的瞬移、换姿、换持物、换握法
+- \`continuity\` 字段必须具体写衔接方式（如「紧接上一镜：右手仍反握、出鞘约30%，本镜继续前冲抽至半剑」），不要只写「硬切」
+
+${SCENE_STATE_CONTINUITY_RULES}
 
 ---
 
@@ -287,13 +301,15 @@ ${recentScenes}
       "description": "场景画面描述（详细：环境/光线来源/构图/色调/景别）",
       "videoPrompt": "Seedance 视频生成英文提示词（描述画面中应该发生的动作和变化）",
       "dialogue": "对白内容（如无对话则写'无'）",
-      "action": "此镜中可见的关键肢体动作",
+      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "startState": "本镜开场身体与持物状态（必须=上一镜 endState）",
+      "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
       "emotion": "情绪氛围（一个词或短语）",
       "emotionNote": "与上一镜相比的情绪变化（如'由平静转为不安'）",
       "characters": ["出场人物名（使用全局扫描中的角色名）"],
-      "firstFrameDescription": "视频首帧画面英文描述（静态画面）",
-      "lastFrameDescription": "视频尾帧画面英文描述（静态画面）",
-      "continuity": "与上一分镜的衔接关系（如'紧接上一镜的表情反应'/'跳切到同场景的另一角度'）",
+      "firstFrameDescription": "视频首帧画面英文描述（静态画面，须与 startState 一致）",
+      "lastFrameDescription": "视频尾帧画面英文描述（静态画面，须与 endState 一致）",
+      "continuity": "与上一分镜的衔接关系（具体过渡，禁止只写硬切）",
       "transition": "转场方式（如'硬切'/'淡入'/'叠化'/'闪白'，默认为硬切）"
     }
   ]

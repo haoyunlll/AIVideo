@@ -3,7 +3,7 @@
  * 使用 FFmpeg 合并多个视频片段
  */
 
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { successResponse, errorResponse, getJSON } from '@/lib/api/response'
 import { exec } from 'child_process'
 import { promisify } from 'util'
@@ -28,11 +28,19 @@ function getTmpDir(): string {
 
 /**
  * 获取 FFmpeg 路径
- * 优先使用用户配置的路径，如果路径无效则 fallback 到系统 PATH
+ * 优先使用用户配置的路径，其次系统 PATH，再尝试 Windows 常见安装路径
  */
 async function getFfmpegPath(): Promise<{ ffmpeg: string; ffprobe: string }> {
   let ffmpegPath: string | null = null
   let ffprobePath: string | null = null
+
+  const windowsCommonPaths = [
+    'C:\\ffmpeg\\bin\\ffmpeg.exe',
+    'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+    'C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe',
+    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\ffmpeg\\bin\\ffmpeg.exe` : null,
+    process.env.USERPROFILE ? `${process.env.USERPROFILE}\\ffmpeg\\bin\\ffmpeg.exe` : null,
+  ].filter((p): p is string => !!p)
   
   // 尝试从数据库获取
   try {
@@ -57,13 +65,13 @@ async function getFfmpegPath(): Promise<{ ffmpeg: string; ffprobe: string }> {
   // 如果配置了路径，验证该路径在当前系统是否有效
   if (ffmpegPath) {
     try {
-      await execAsync(`"${ffmpegPath}" -version`, { timeout: 5000 })
+      await execAsync(`"${ffmpegPath}" -version`, { timeout: 5000, windowsHide: true })
       console.log('[VideoMerge] 使用用户配置的 FFmpeg:', ffmpegPath)
       return {
         ffmpeg: ffmpegPath,
-        ffprobe: ffprobePath || ffmpegPath
+        ffprobe: ffprobePath || ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
       }
-    } catch (error) {
+    } catch {
       console.warn(`[VideoMerge] 用户配置的 FFmpeg 路径 "${ffmpegPath}" 无效，尝试系统 FFmpeg`)
     }
   }
@@ -71,17 +79,16 @@ async function getFfmpegPath(): Promise<{ ffmpeg: string; ffprobe: string }> {
   // 尝试从系统 PATH 检测
   try {
     const checkCmd = process.platform === 'win32' ? 'where ffmpeg' : 'which ffmpeg'
-    const { stdout } = await execAsync(checkCmd)
-    const lines = stdout.trim().split('\n')
+    const { stdout } = await execAsync(checkCmd, { windowsHide: true })
+    const lines = stdout.trim().split(/\r?\n/)
     if (lines.length > 0) {
       const systemPath = lines[0].trim()
-      // 验证系统 FFmpeg 是否有效
       try {
-        await execAsync(`"${systemPath}" -version`, { timeout: 5000 })
+        await execAsync(`"${systemPath}" -version`, { timeout: 5000, windowsHide: true })
         console.log('[VideoMerge] 使用系统 FFmpeg:', systemPath)
         return {
           ffmpeg: systemPath,
-          ffprobe: systemPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1')
+          ffprobe: systemPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
         }
       } catch {
         console.warn('[VideoMerge] 系统 FFmpeg 无效')
@@ -89,6 +96,22 @@ async function getFfmpegPath(): Promise<{ ffmpeg: string; ffprobe: string }> {
     }
   } catch {
     console.warn('[VideoMerge] 无法从系统 PATH 检测 FFmpeg')
+  }
+
+  // Windows 常见安装路径（与 /api/ffmpeg 保持一致）
+  if (process.platform === 'win32') {
+    for (const commonPath of windowsCommonPaths) {
+      try {
+        await execAsync(`"${commonPath}" -version`, { timeout: 5000, windowsHide: true })
+        console.log('[VideoMerge] 使用常见安装路径:', commonPath)
+        return {
+          ffmpeg: commonPath,
+          ffprobe: commonPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
+        }
+      } catch {
+        // try next
+      }
+    }
   }
   
   // 最后 fallback 到 'ffmpeg'（依赖系统 PATH）
@@ -100,50 +123,81 @@ async function getFfmpegPath(): Promise<{ ffmpeg: string; ffprobe: string }> {
 
 /**
  * 下载视频到临时目录
- * 支持本地路径和远程 URL
+ * 支持：/api/images?key=...、/scenes/... 本地 public、远程 http(s)
  */
 async function downloadVideo(url: string, filename: string): Promise<string> {
   const tmpDir = getTmpDir()
   const filePath = join(tmpDir, filename)
-  
+
   // 如果已存在，直接返回
   if (existsSync(filePath)) {
     console.log(`[VideoMerge] 文件已存在: ${filePath}`)
     return filePath
   }
-  
-  console.log(`[VideoMerge] 获取视频: ${url.substring(0, 60)}...`)
-  
-  // 判断是本地路径还是远程 URL
-  if (url.startsWith('/')) {
-    // 本地路径，从 public 目录读取
-    const localPath = join(process.cwd(), 'public', url)
-    
+
+  console.log(`[VideoMerge] 获取视频: ${url.substring(0, 80)}...`)
+
+  const { extractStorageKeyFromUrl, getObjectBuffer } = await import('@/lib/storage')
+
+  // 1) /api/images?key=... 或可解析的存储 key → 从 MinIO/本地存储读
+  const storageKey = extractStorageKeyFromUrl(url)
+  if (storageKey) {
+    const obj = await getObjectBuffer(storageKey)
+    if (obj?.buffer?.length) {
+      writeFileSync(filePath, obj.buffer)
+      console.log(
+        `[VideoMerge] 从对象存储读取完成: ${filePath} (${(obj.buffer.length / 1024 / 1024).toFixed(2)} MB)`
+      )
+      return filePath
+    }
+    console.warn(`[VideoMerge] 对象存储未找到 key=${storageKey}，尝试其它方式`)
+  }
+
+  // 2) 站内相对路径：/scenes/... /characters/... → public
+  if (url.startsWith('/') && !url.startsWith('/api/')) {
+    const localPath = join(process.cwd(), 'public', url.split('?')[0])
     if (!existsSync(localPath)) {
       throw new Error(`本地文件不存在: ${localPath}`)
     }
-    
-    // 复制到临时目录
     const buffer = readFileSync(localPath)
     writeFileSync(filePath, buffer)
-    console.log(`[VideoMerge] 本地文件复制完成: ${filePath} (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`)
-    
+    console.log(
+      `[VideoMerge] 本地文件复制完成: ${filePath} (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`
+    )
     return filePath
-  } else if (url.startsWith('http://') || url.startsWith('https://')) {
-    // 远程 URL，下载视频
+  }
+
+  // 3) /api/images 走本机 HTTP（对象存储失败时的兜底）
+  if (url.startsWith('/api/')) {
+    const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+    const fetchUrl = `${domain}${url}`
+    const response = await fetch(fetchUrl)
+    if (!response.ok) {
+      throw new Error(`下载视频失败: HTTP ${response.status} ${response.statusText} (${fetchUrl.slice(0, 120)})`)
+    }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    writeFileSync(filePath, buffer)
+    console.log(
+      `[VideoMerge] 本机 API 下载完成: ${filePath} (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`
+    )
+    return filePath
+  }
+
+  // 4) 远程 URL
+  if (url.startsWith('http://') || url.startsWith('https://')) {
     const response = await fetch(url)
     if (!response.ok) {
       throw new Error(`下载视频失败: HTTP ${response.status} ${response.statusText}`)
     }
-    
-    const buffer = await response.arrayBuffer()
-    writeFileSync(filePath, Buffer.from(buffer))
-    console.log(`[VideoMerge] 下载完成: ${filePath} (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)`)
-    
+    const buffer = Buffer.from(await response.arrayBuffer())
+    writeFileSync(filePath, buffer)
+    console.log(
+      `[VideoMerge] 下载完成: ${filePath} (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`
+    )
     return filePath
-  } else {
-    throw new Error(`无效的视频 URL: ${url}`)
   }
+
+  throw new Error(`无效的视频 URL: ${url}`)
 }
 
 /**
@@ -194,12 +248,15 @@ export async function POST(request: NextRequest) {
       console.log('[VideoMerge] FFmpeg 版本:', stdout.split('\n')[0])
     } catch (ffmpegError) {
       console.error('[VideoMerge] FFmpeg 检测失败:', ffmpegError)
-      return successResponse({
-        success: false,
-        error: 'FFmpeg 不可用，请检查配置或安装 FFmpeg',
-        needConfig: true,
-        details: ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError)
-      })
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'FFmpeg 不可用，请检查配置或安装 FFmpeg',
+          needConfig: true,
+          details: ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError),
+        },
+        { status: 503 }
+      )
     }
     
     // 获取项目分镜数据

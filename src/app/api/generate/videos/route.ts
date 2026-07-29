@@ -629,21 +629,27 @@ async function generateSequential(
 async function convertImageUrlForVideo(
   imageUrl: string, 
   sceneId: string,
-  storage: S3Storage
+  _storage: S3Storage
 ): Promise<string> {
-  console.log(`[convertImageUrl] 原始 URL: ${imageUrl.substring(0, 80)}...`);
-  
+  console.log(`[convertImageUrl] 原始 URL: ${imageUrl.substring(0, 120)}...`);
+
+  const { uploadFile, extractStorageKeyFromUrl } = await import('@/lib/storage')
+  const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+
+  // /api/images?key=... → 保留 key，交给后续 base64；不要误判成「已有 .png」
+  if (imageUrl.includes('/api/images')) {
+    console.log(`[convertImageUrl] 检测到图片代理地址，转为绝对 URL 供本机读取`)
+    return imageUrl.startsWith('http') ? imageUrl : `${domain}${imageUrl}`
+  }
+
   // 处理本地存储的图片 URL（以 /scenes/ 或 /characters/ 开头）
   if (imageUrl.startsWith('/scenes/') || imageUrl.startsWith('/characters/')) {
     console.log(`[convertImageUrl] 检测到本地图片，尝试上传到对象存储...`);
 
     try {
-      // 构造完整的 URL
-      const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
       const fullUrl = `${domain}${imageUrl}`
       console.log(`[convertImageUrl] 下载本地图片: ${fullUrl}`)
 
-      // 下载图片
       const response = await fetch(fullUrl)
       if (!response.ok) {
         console.warn(`[convertImageUrl] 本地图片下载失败: ${response.status}`)
@@ -653,7 +659,6 @@ async function convertImageUrlForVideo(
       const arrayBuffer = await response.arrayBuffer()
       const buffer = Buffer.from(arrayBuffer)
 
-      // 检测图片格式
       let format = 'png'
       if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
         format = 'jpg'
@@ -665,47 +670,13 @@ async function convertImageUrlForVideo(
 
       console.log(`[convertImageUrl] 本地图片格式: ${format}, 大小: ${(buffer.length / 1024).toFixed(2)} KB`)
 
-      // 使用 S3Storage 上传
-      // 确保使用正斜杠作为路径分隔符
       const cleanedSceneId = sceneId.replace(/\\/g, '/')
       const key = `scenes/${cleanedSceneId}/image_${Date.now()}.${format}`.replace(/\\/g, '/')
-      console.log(`[convertImageUrl] 上传到 OSS，key: ${key}`)
-      console.log(`[convertImageUrl] 原始 sceneId: ${sceneId}`)
-      console.log(`[convertImageUrl] 清理后 sceneId: ${cleanedSceneId}`)
+      console.log(`[convertImageUrl] 上传到对象存储，key: ${key}`)
 
-      // 上传图片
-      console.log(`[convertImageUrl] 开始上传图片到 OSS...`)
-      await storage.uploadFile({
-        fileContent: buffer,
-        fileName: key,
-        contentType: `image/${format}`,
-      })
-      console.log(`[convertImageUrl] 上传成功`)
+      const newUrl = await uploadFile(key, buffer, `image/${format === 'jpg' ? 'jpeg' : format}`)
+      console.log(`[convertImageUrl] 上传成功: ${newUrl.substring(0, 120)}`)
 
-      // 生成公网 URL
-      const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-      const newUrl = `${endpoint}/${key}`
-      console.log(`[convertImageUrl] 公网 URL 生成成功`)
-      console.log(`[convertImageUrl] 完整 URL: ${newUrl}`)
-
-      // 验证 URL 是否可访问
-      console.log(`[convertImageUrl] 验证 URL 是否可访问...`)
-      try {
-        const testResponse = await fetch(newUrl, { method: 'HEAD' })
-        if (testResponse.ok) {
-          console.log(`[convertImageUrl] URL 验证成功，HTTP ${testResponse.status}`)
-        } else {
-          console.warn(`[convertImageUrl] URL 验证失败，HTTP ${testResponse.status}`)
-          throw new Error(`URL 不可访问: HTTP ${testResponse.status}`)
-        }
-      } catch (fetchError) {
-        console.error(`[convertImageUrl] URL 验证失败:`, fetchError)
-        throw new Error(`URL 验证失败: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`)
-      }
-
-      console.log(`[convertImageUrl] 已上传到对象存储: ${newUrl.substring(0, 80)}...`)
-
-      // 更新数据库中的 image_url（可选，推荐）
       try {
         const { getSupabaseClient, isDatabaseConfigured } = await import('@/storage/database/supabase-client')
         if (isDatabaseConfigured()) {
@@ -724,16 +695,27 @@ async function convertImageUrlForVideo(
         console.warn(`[convertImageUrl] 更新数据库失败:`, dbError)
       }
 
-      return newUrl
+      // 本机 MinIO 对火山不可达，返回代理地址，后续会转 base64
+      return newUrl.startsWith('http') && (newUrl.includes('127.0.0.1') || newUrl.includes('localhost'))
+        ? `${domain}/api/images?key=${encodeURIComponent(key)}`
+        : (newUrl.startsWith('/') ? `${domain}${newUrl}` : newUrl)
     } catch (error) {
       console.error(`[convertImageUrl] 上传本地图片到对象存储失败:`, error)
-      // 失败后回退到 localhost URL
-      const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
       return `${domain}${imageUrl}`
     }
   }
+
+  // 本机 MinIO 直链 → 转成代理绝对地址
+  if (imageUrl.includes('127.0.0.1:9000') || imageUrl.includes('localhost:9000')) {
+    const key = extractStorageKeyFromUrl(imageUrl)
+    if (key) {
+      const proxy = `${domain}/api/images?key=${encodeURIComponent(key)}`
+      console.log(`[convertImageUrl] MinIO 直链改为代理: ${proxy.slice(0, 120)}`)
+      return proxy
+    }
+  }
   
-  // 检查 URL 是否已经是支持的格式
+  // 检查 URL 是否已经是支持的格式（仅对绝对公网 URL）
   const supportedPatterns = [
     /\.png$/i,
     /\.jpg$/i,
@@ -741,10 +723,13 @@ async function convertImageUrlForVideo(
     /\.webp$/i,
   ];
   
-  // 如果 URL 已经包含明确的图片格式后缀，直接返回
-  if (supportedPatterns.some(pattern => pattern.test(imageUrl))) {
+  if (imageUrl.startsWith('http') && supportedPatterns.some(pattern => pattern.test(imageUrl.split('?')[0]))) {
     console.log(`[convertImageUrl] URL 已包含支持的图片格式`);
     return imageUrl;
+  }
+
+  if (imageUrl.startsWith('/')) {
+    return `${domain}${imageUrl}`
   }
   
   // 检查是否是 Coze 存储链接（s.coze.cn 或 tos）
@@ -807,21 +792,10 @@ async function convertImageUrlForVideo(
       
       // 尝试上传到对象存储
       try {
-        const key = `video-frames/${sceneId}/frame_${Date.now()}.${format}`;
-        await storage.uploadFile({
-          fileContent: buffer,
-          fileName: key,
-          contentType: `image/${format}`,
-        });
-        
-        const signedUrl = await storage.generatePresignedUrl({
-          key,
-          expireTime: 3600,
-        });
-        
-        const newUrl = typeof signedUrl === 'string' ? signedUrl : (signedUrl as { url: string }).url;
-        console.log(`[convertImageUrl] 已转换为正确格式: ${newUrl.substring(0, 60)}...`);
-        return newUrl;
+        const key = `video-frames/${sceneId}/frame_${Date.now()}.${format}`.replace(/\\/g, '/');
+        const uploaded = await uploadFile(key, buffer, `image/${format === 'jpg' ? 'jpeg' : format}`);
+        console.log(`[convertImageUrl] 已转换为正确格式: ${uploaded.substring(0, 80)}...`);
+        return uploaded.startsWith('/') ? `${domain}${uploaded}` : uploaded;
       } catch (uploadErr) {
         console.warn(`[convertImageUrl] 上传失败，使用原始 URL:`, uploadErr);
         return imageUrl;
@@ -1030,7 +1004,7 @@ function calculateDuration(
   if (scene.description && scene.description.length > 100) duration += 1;
 
   // 根据视频模型确定最大时长
-  const maxDuration = videoModel === 'doubao-seedance-2-0' ? 15 : 12;
+  const maxDuration = videoModel.startsWith('doubao-seedance-2-0') ? 15 : 12;
   return Math.min(Math.max(duration, 4), maxDuration);
 }
 

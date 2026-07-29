@@ -380,7 +380,7 @@ export const SettingsService = {
         },
         video: {
           provider: 'doubao',
-          model: 'doubao-seedance-1-5-pro-251215',
+          model: 'doubao-seedance-2-0-mini-260615',
           apiKey: process.env.VIDEO_API_KEY,
           baseUrl: process.env.VIDEO_BASE_URL,
         },
@@ -406,7 +406,7 @@ export const SettingsService = {
       },
       video: {
         provider: data.video_provider || 'doubao',
-        model: data.video_model || 'doubao-seedance-1-5-pro-251215',
+        model: data.video_model || 'doubao-seedance-2-0-mini-260615',
         apiKey: data.video_api_key || process.env.VIDEO_API_KEY,
         baseUrl: data.video_base_url || process.env.VIDEO_BASE_URL,
       },

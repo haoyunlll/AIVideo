@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { HeaderUtils, S3Storage } from "coze-coding-dev-sdk"
 import { generateImageFromImage } from "@/lib/ai"
 import { downloadFile } from "@/lib/utils"
+import { CHARACTER_PORTRAIT_STYLE_PROMPT } from "@/lib/styles"
 
 // POST /api/generate/appearance-from-image - 根据参考图生成新形象
 export async function POST(request: NextRequest) {
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest) {
         console.warn('[Generate Appearance from Image] Failed to convert reference image, falling back to text-to-image:', error)
 
         // 转换失败，回退到文生图
-        const fallbackPrompt = `${characterName || '角色'}的角色形象图：${changeDescription || '新形象'}，高质量，细节丰富`
+        const fallbackPrompt = `${characterName || '角色'}的角色形象图：${changeDescription || '新形象'}，${CHARACTER_PORTRAIT_STYLE_PROMPT}，细节丰富`
         const { generateImage } = await import('@/lib/ai')
         const result = await generateImage(fallbackPrompt, {
           size: '2K',
@@ -110,7 +111,7 @@ export async function POST(request: NextRequest) {
     const name = characterName || '角色'
     const change = changeDescription || '保持原风格'
     // 提示词：参考图片已包含原始形象，这里只描述目标变更
-    const basePrompt = `请根据参考图片，将人物${name}的形象改变为：${change}。必须保持人物面部特征与参考图一致，不要改变五官和脸型。更换服装、发型、姿态和整体气质以匹配新的形象描述。高质量，细节丰富。`
+    const basePrompt = `请根据参考图片，将人物${name}的形象改变为：${change}。必须保持人物面部特征与参考图一致，不要改变五官和脸型。更换服装、发型、姿态和整体气质以匹配新的形象描述。输出为${CHARACTER_PORTRAIT_STYLE_PROMPT}，细节丰富。`
 
     console.log('Generating new appearance with prompt:', basePrompt.substring(0, 100))
 

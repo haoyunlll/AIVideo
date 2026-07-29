@@ -58,7 +58,7 @@ const defaultSettings: SettingsData = {
   image_model: 'doubao-seedream-4-0-250828',
   image_size: '1024x1024',
   video_provider: 'doubao',
-  video_model: 'doubao-seedance-1-5-pro-251215',
+  video_model: 'doubao-seedance-2-0-mini-260615',
   video_resolution: '720p',
   video_ratio: '16:9',
   voice_provider: 'doubao',

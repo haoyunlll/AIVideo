@@ -1,7 +1,64 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseClient } from "@/storage/database/supabase-client"
-import { insertEpisodeSchema, updateEpisodeSchema } from "@/storage/database/shared/schema"
+import { insertEpisodeSchema } from "@/storage/database/shared/schema"
 import { memoryEpisodes, memoryScenes, generateId } from "@/lib/memory-storage"
+
+function createMemoryEpisode(data: {
+  projectId: string
+  seasonNumber: number
+  episodeNumber: number
+  title: string
+  description?: string | null
+  scriptIds?: string[]
+  sceneIds?: string[]
+  sceneStart?: number
+  sceneEnd?: number
+}) {
+  const episode = {
+    id: generateId("ep"),
+    projectId: data.projectId,
+    seasonNumber: data.seasonNumber,
+    episodeNumber: data.episodeNumber,
+    title: data.title,
+    description: data.description || undefined,
+    status: "draft",
+    createdAt: new Date().toISOString(),
+  }
+
+  memoryEpisodes.push(episode)
+
+  let sceneCount = 0
+  if (data.scriptIds && data.scriptIds.length > 0) {
+    const scenes = memoryScenes.filter(
+      (s) =>
+        s.projectId === data.projectId &&
+        data.scriptIds!.includes(s.scriptId || "") &&
+        !s.episodeId
+    )
+    for (const scene of scenes) {
+      scene.episodeId = episode.id
+      sceneCount++
+    }
+  } else if (data.sceneIds && data.sceneIds.length > 0) {
+    for (const scene of memoryScenes) {
+      if (data.sceneIds.includes(scene.id) && scene.projectId === data.projectId) {
+        scene.episodeId = episode.id
+        sceneCount++
+      }
+    }
+  } else if (data.sceneStart !== undefined && data.sceneEnd !== undefined) {
+    const unassigned = memoryScenes
+      .filter((s) => s.projectId === data.projectId && !s.episodeId)
+      .sort((a, b) => a.sceneNumber - b.sceneNumber)
+    const slice = unassigned.slice(data.sceneStart - 1, data.sceneEnd)
+    for (const scene of slice) {
+      scene.episodeId = episode.id
+      sceneCount++
+    }
+  }
+
+  return { episode, sceneCount }
+}
 
 // GET /api/episodes - 获取项目的剧集列表
 export async function GET(request: NextRequest) {
@@ -14,7 +71,8 @@ export async function GET(request: NextRequest) {
 
   // 尝试从数据库获取
   try {
-    const client = getSupabaseClient()
+    // 使用 service_role，避免 RLS 拦截
+    const client = getSupabaseClient(true)
 
     // 获取剧集列表，按季数和集数排序
     const { data: episodes, error } = await client
@@ -85,7 +143,6 @@ export async function GET(request: NextRequest) {
 // POST /api/episodes - 创建新剧集
 export async function POST(request: NextRequest) {
   const body = await request.json()
-  const client = getSupabaseClient()
 
   const parsed = insertEpisodeSchema.safeParse(body)
   if (!parsed.success) {
@@ -95,110 +152,181 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // 检查同一项目下是否已存在相同季数和集数的剧集
-  const { data: existing } = await client
-    .from("episodes")
-    .select("id")
-    .eq("project_id", parsed.data.projectId)
-    .eq("season_number", parsed.data.seasonNumber || 1)
-    .eq("episode_number", parsed.data.episodeNumber)
-    .single()
+  const seasonNumber = parsed.data.seasonNumber || 1
+  const episodeNumber = parsed.data.episodeNumber
 
-  if (existing) {
-    return NextResponse.json(
-      { error: "该季数和集数已存在" },
-      { status: 400 }
-    )
-  }
+  try {
+    // 使用 service_role，与角色/分镜写入一致，避免 anon + RLS / 网络异常
+    const client = getSupabaseClient(true)
 
-  const { data: episode, error } = await client
-    .from("episodes")
-    .insert({
-      id: generateId('ep'),  // 添加 id 字段
-      project_id: parsed.data.projectId,
-      season_number: parsed.data.seasonNumber || 1,
-      episode_number: parsed.data.episodeNumber,
-      title: parsed.data.title,
-      description: parsed.data.description,
-    })
-    .select()
-    .single()
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  // 如果指定了脚本ID，将属于该脚本的分镜分配到该剧集
-  let sceneCount = 0
-  if (body.scriptIds && Array.isArray(body.scriptIds) && body.scriptIds.length > 0) {
-    // 获取属于指定脚本的未分配分镜
-    const { data: unassignedScenes } = await client
-      .from("scenes")
-      .select("id, scene_number, script_id")
-      .eq("project_id", parsed.data.projectId)
-      .in("script_id", body.scriptIds)
-      .is("episode_id", null)
-      .order("script_id", { ascending: true })
-      .order("scene_number", { ascending: true })
-
-    if (unassignedScenes && unassignedScenes.length > 0) {
-      const sceneIds = unassignedScenes.map((s: any) => s.id)
-      await client
-        .from("scenes")
-        .update({ episode_id: episode.id, updated_at: new Date().toISOString() })
-        .in("id", sceneIds)
-      
-      sceneCount = sceneIds.length
-    }
-  }
-  // 如果指定了分镜ID，分配这些分镜到该剧集
-  else if (body.sceneIds && Array.isArray(body.sceneIds) && body.sceneIds.length > 0) {
-    // 直接使用传入的分镜ID
-    const { data: scenesData } = await client
-      .from("scenes")
+    // 检查同一项目下是否已存在相同季数和集数的剧集
+    const { data: existing, error: existingError } = await client
+      .from("episodes")
       .select("id")
       .eq("project_id", parsed.data.projectId)
-      .in("id", body.sceneIds)
+      .eq("season_number", seasonNumber)
+      .eq("episode_number", episodeNumber)
+      .maybeSingle()
 
-    if (scenesData && scenesData.length > 0) {
-      const sceneIds = scenesData.map((s: any) => s.id)
-      await client
-        .from("scenes")
-        .update({ episode_id: episode.id, updated_at: new Date().toISOString() })
-        .in("id", sceneIds)
-      
-      sceneCount = sceneIds.length
+    if (existingError) {
+      console.warn("[Episodes API] Check existing failed:", existingError.message)
+      // 表不存在或网络失败时回退内存
+      if (
+        existingError.message.includes("fetch failed") ||
+        existingError.message.includes("Could not find the table") ||
+        existingError.code === "42P01" ||
+        existingError.code === "PGRST205"
+      ) {
+        console.warn("[Episodes API] Falling back to memory store for create")
+        const result = createMemoryEpisode({
+          projectId: parsed.data.projectId,
+          seasonNumber,
+          episodeNumber,
+          title: parsed.data.title,
+          description: parsed.data.description,
+          scriptIds: body.scriptIds,
+          sceneIds: body.sceneIds,
+          sceneStart: body.sceneStart,
+          sceneEnd: body.sceneEnd,
+        })
+        return NextResponse.json(result)
+      }
     }
-  }
-  // 如果指定了分镜范围，分配分镜到该剧集
-  else if (body.sceneStart !== undefined && body.sceneEnd !== undefined) {
-    const sceneStart = Math.max(1, body.sceneStart)
-    const sceneEnd = Math.max(sceneStart, body.sceneEnd)
 
-    // 获取未分配的分镜（按序号排序）
-    const { data: unassignedScenes } = await client
-      .from("scenes")
-      .select("id")
-      .eq("project_id", parsed.data.projectId)
-      .is("episode_id", null)
-      .order("scene_number", { ascending: true })
+    if (existing) {
+      return NextResponse.json(
+        { error: "该季数和集数已存在" },
+        { status: 400 }
+      )
+    }
 
-    if (unassignedScenes && unassignedScenes.length > 0) {
-      // 提取指定范围的分镜
-      const scenesToAssign = unassignedScenes.slice(sceneStart - 1, sceneEnd)
-      
-      // 更新这些分镜的 episode_id
-      if (scenesToAssign.length > 0) {
-        const sceneIds = scenesToAssign.map((s: any) => s.id)
+    const { data: episode, error } = await client
+      .from("episodes")
+      .insert({
+        id: generateId("ep"),
+        project_id: parsed.data.projectId,
+        season_number: seasonNumber,
+        episode_number: episodeNumber,
+        title: parsed.data.title,
+        description: parsed.data.description,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error("[Episodes API] Insert failed:", error.message, error)
+      // 常见原因：未建 episodes 表、网络 fetch failed、RLS
+      if (
+        error.message.includes("fetch failed") ||
+        error.message.includes("Could not find the table") ||
+        error.code === "42P01" ||
+        error.code === "PGRST205"
+      ) {
+        console.warn("[Episodes API] Falling back to memory store after insert failure")
+        const result = createMemoryEpisode({
+          projectId: parsed.data.projectId,
+          seasonNumber,
+          episodeNumber,
+          title: parsed.data.title,
+          description: parsed.data.description,
+          scriptIds: body.scriptIds,
+          sceneIds: body.sceneIds,
+          sceneStart: body.sceneStart,
+          sceneEnd: body.sceneEnd,
+        })
+        return NextResponse.json(result)
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+
+    // 如果指定了脚本ID，将属于该脚本的分镜分配到该剧集
+    let sceneCount = 0
+    if (body.scriptIds && Array.isArray(body.scriptIds) && body.scriptIds.length > 0) {
+      const { data: unassignedScenes } = await client
+        .from("scenes")
+        .select("id, scene_number, script_id")
+        .eq("project_id", parsed.data.projectId)
+        .in("script_id", body.scriptIds)
+        .is("episode_id", null)
+        .order("script_id", { ascending: true })
+        .order("scene_number", { ascending: true })
+
+      if (unassignedScenes && unassignedScenes.length > 0) {
+        const sceneIds = unassignedScenes.map((s: any) => s.id)
         await client
           .from("scenes")
           .update({ episode_id: episode.id, updated_at: new Date().toISOString() })
           .in("id", sceneIds)
-        
+
         sceneCount = sceneIds.length
       }
     }
-  }
+    // 如果指定了分镜ID，分配这些分镜到该剧集
+    else if (body.sceneIds && Array.isArray(body.sceneIds) && body.sceneIds.length > 0) {
+      const { data: scenesData } = await client
+        .from("scenes")
+        .select("id")
+        .eq("project_id", parsed.data.projectId)
+        .in("id", body.sceneIds)
 
-  return NextResponse.json({ episode, sceneCount })
+      if (scenesData && scenesData.length > 0) {
+        const sceneIds = scenesData.map((s: any) => s.id)
+        await client
+          .from("scenes")
+          .update({ episode_id: episode.id, updated_at: new Date().toISOString() })
+          .in("id", sceneIds)
+
+        sceneCount = sceneIds.length
+      }
+    }
+    // 如果指定了分镜范围，分配分镜到该剧集
+    else if (body.sceneStart !== undefined && body.sceneEnd !== undefined) {
+      const sceneStart = Math.max(1, body.sceneStart)
+      const sceneEnd = Math.max(sceneStart, body.sceneEnd)
+
+      const { data: unassignedScenes } = await client
+        .from("scenes")
+        .select("id")
+        .eq("project_id", parsed.data.projectId)
+        .is("episode_id", null)
+        .order("scene_number", { ascending: true })
+
+      if (unassignedScenes && unassignedScenes.length > 0) {
+        const scenesToAssign = unassignedScenes.slice(sceneStart - 1, sceneEnd)
+
+        if (scenesToAssign.length > 0) {
+          const sceneIds = scenesToAssign.map((s: any) => s.id)
+          await client
+            .from("scenes")
+            .update({ episode_id: episode.id, updated_at: new Date().toISOString() })
+            .in("id", sceneIds)
+
+          sceneCount = sceneIds.length
+        }
+      }
+    }
+
+    return NextResponse.json({ episode, sceneCount })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error("[Episodes API] Create exception:", message, err)
+
+    // 网络层 TypeError: fetch failed 等 → 回退内存，保证本地可用
+    if (message.includes("fetch failed") || message.includes("TypeError")) {
+      const result = createMemoryEpisode({
+        projectId: parsed.data.projectId,
+        seasonNumber,
+        episodeNumber,
+        title: parsed.data.title,
+        description: parsed.data.description,
+        scriptIds: body.scriptIds,
+        sceneIds: body.sceneIds,
+        sceneStart: body.sceneStart,
+        sceneEnd: body.sceneEnd,
+      })
+      return NextResponse.json(result)
+    }
+
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
 }

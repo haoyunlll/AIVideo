@@ -202,5 +202,7 @@ export function getRecentScenesSummary(
     title: s.title,
     characters: s.characters || s.characterNames || [],
     emotion: s.emotion || '',
+    endState: s.endState || '',
+    endingAction: s.endState || s.action || s.lastFrameDescription || '',
   }))
 }

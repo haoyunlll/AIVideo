@@ -69,6 +69,8 @@ export const memoryScenes: Array<{
   videoStatus?: string
   imageKey?: string
   lastFrameUrl?: string
+  /** 动作分解拼图等扩展字段 */
+  metadata?: Record<string, unknown>
   createdAt: string
 }> = []
 

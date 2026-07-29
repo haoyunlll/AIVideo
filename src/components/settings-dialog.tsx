@@ -50,7 +50,7 @@ const DEFAULT_SETTINGS: Settings = {
   image_base_url: null,
   image_size: '2K',
   video_provider: 'doubao',
-  video_model: 'doubao-seedance-1-0-pro-250528',
+  video_model: 'doubao-seedance-2-0-mini-260615',
   video_api_key: null,
   video_base_url: null,
   video_resolution: '720p',
@@ -126,11 +126,12 @@ const IMAGE_MODELS = [
 // 火山引擎视频生成模型列表
 // 文档：https://www.volcengine.com/docs/82379/1587798
 const VIDEO_MODELS = [
-  { value: "doubao-seedance-1-5-pro-251215", label: "Doubao Seedance 1.5 Pro (推荐)", description: "支持音频生成、首尾帧生视频，时长 4-12 秒" },
+  { value: "doubao-seedance-2-0-mini-260615", label: "Doubao Seedance 2.0 Mini (推荐)", description: "性价比之选，支持 480p/720p，时长 4-15 秒" },
   { value: "doubao-seedance-2-0", label: "Doubao Seedance 2.0", description: "新一代模型，时长 4-15 秒" },
+  { value: "doubao-seedance-1-5-pro-251215", label: "Doubao Seedance 1.5 Pro", description: "支持音频生成、首尾帧生视频，时长 4-12 秒" },
   { value: "doubao-seedance-1-0-pro-250528", label: "Doubao Seedance 1.0 Pro", description: "首尾帧生视频、多镜头叙事" },
   { value: "doubao-seedance-1-0-pro-fast", label: "Doubao Seedance 1.0 Pro Fast", description: "快速生成版本" },
-  { value: "doubao-seedance-1-0-lite", label: "Doubao Seedance 1.0 Lite", description: "轻量版，性价比之选" },
+  { value: "doubao-seedance-1-0-lite", label: "Doubao Seedance 1.0 Lite", description: "轻量版" },
 ]
 
 const VOICE_MODELS = [
@@ -815,7 +816,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                     <div className="text-sm">
                       <p className="font-medium">系统已内置视频生成模型</p>
                       <p className="text-muted-foreground mt-1">
-                        使用 Doubao Seedance 1.5 Pro，支持图生视频、自动音频生成。
+                        使用 Doubao Seedance 2.0 Mini，支持图生视频（480p/720p）。
                       </p>
                     </div>
                   </div>

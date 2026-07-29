@@ -176,20 +176,21 @@ export function VideoMergePanel({ projectId, scenes, onVideoAddedToEpisode }: Vi
 
       clearInterval(progressInterval)
       const data = await res.json()
+      const payload = data.data || data
 
-      if (!res.ok || !data.success) {
-        if (data.needConfig) {
+      if (!res.ok || data.success === false || payload.success === false || payload.needConfig) {
+        if (data.needConfig || payload.needConfig) {
           toast.error('FFmpeg 未配置，请先在设置中配置')
           setSettingsOpen(true)
         } else {
-          throw new Error(data.error || '合并失败')
+          throw new Error(data.error?.message || data.error || payload.error || '合并失败')
         }
         return
       }
 
       setProgress(100)
-      setResult(data.data || data)
-      toast.success(`合并完成！共 ${data.sceneCount} 个视频，时长 ${data.duration?.toFixed(1) || 0} 秒`)
+      setResult(payload)
+      toast.success(`合并完成！共 ${payload.sceneCount || payload.scenes?.length || selectedScenes.size} 个视频，时长 ${payload.duration?.toFixed(1) || 0} 秒`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '合并失败')
     } finally {

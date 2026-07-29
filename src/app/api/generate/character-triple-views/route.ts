@@ -7,6 +7,7 @@ import { HeaderUtils, S3Storage } from "coze-coding-dev-sdk"
 import { generateImageFromImage } from "@/lib/ai"
 import { downloadFile } from "@/lib/utils"
 import { getSupabaseClient, isDatabaseConfigured } from "@/storage/database/supabase-client"
+import { CHARACTER_PORTRAIT_STYLE_PROMPT } from "@/lib/styles"
 
 // 获取人物库专用的数据库客户端（与人物库 API 保持一致）
 function getCharacterLibraryClient() {
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
     // 构建三视图生成提示词
     const name = characterName || '角色'
     const desc = appearance || '角色形象'
-    const basePrompt = `根据提供的参考图片，生成${name}的三视图（正面、侧面、背面），保持人物形象一致，${desc}，白色背景，用于角色设定参考，高质量，细节丰富`
+    const basePrompt = `根据提供的参考图片，生成${name}的三视图（正面、侧面、背面），保持人物形象一致，${desc}，${CHARACTER_PORTRAIT_STYLE_PROMPT}，白色背景，用于角色设定参考，细节丰富`
 
     console.log('Generating triple views with prompt:', basePrompt.substring(0, 100))
 

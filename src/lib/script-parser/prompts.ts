@@ -2,6 +2,8 @@
  * 两阶段剧本解析 - 提示词模板
  */
 
+import { SCENE_STATE_CONTINUITY_RULES } from '@/lib/scene-continuity'
+
 // ==================== 第一阶段：全局扫描 ====================
 
 /**
@@ -130,7 +132,10 @@ ${chunkContent}
       "durationSec": 数字,
       "description": "详细画面描述（50-120字），包含环境、光影、构图、氛围。用于后续视频生成参考图，必须包含具体视觉元素",
       "dialogue": "对白内容（如有），格式：角色名：\\"对白内容\\"",
-      "action": "动作/表演描述（20-60字），描述角色的具体动作、表情、走位",
+      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "startState": "本镜开场身体与持物状态（必须=上一镜 endState）",
+      "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
+      "continuity": "与上一镜的具体过渡（禁止只写硬切）",
       "emotion": "情绪氛围（如：温馨、紧张、悲伤、欢乐、悬疑）",
       "characters": ["出场角色名称"],
       "shotType": "景别（远景/全景/中景/近景/特写）",
@@ -167,6 +172,10 @@ ${chunkContent}
 1. description 必须包含：环境细节 + 光线条件 + 构图参考 + 视觉重点
 2. 景别要符合影视拍摄规范
 3. 镜头运动要与情绪匹配（紧张→手持跟拍，温馨→固定或缓慢推进）
+
+### 镜间身体状态接力（最高优先级）
+${SCENE_STATE_CONTINUITY_RULES}
+- 若上方「当前场景」中给出了上一镜摘要，本块第一镜 startState 必须承接该摘要的收束状态
 
 ### 编号规则
 1. sceneNumber 必须从 ${currentSceneIndex} 开始，连续递增
@@ -214,6 +223,9 @@ export interface Phase2Scene {
   description: string
   dialogue: string
   action: string
+  startState?: string
+  endState?: string
+  continuity?: string
   emotion: string
   characters: string[]
   shotType: string

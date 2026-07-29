@@ -394,7 +394,7 @@ export const userSettings = pgTable(
     
     // 视频生成配置
     videoProvider: varchar("video_provider", { length: 50 }).default("doubao"),
-    videoModel: varchar("video_model", { length: 100 }).default("doubao-seedance-1-5-pro-251215"),
+    videoModel: varchar("video_model", { length: 100 }).default("doubao-seedance-2-0-mini-260615"),
     videoApiKey: text("video_api_key"),
     videoBaseUrl: varchar("video_base_url", { length: 255 }),
     videoResolution: varchar("video_resolution", { length: 20 }).default("720p"),

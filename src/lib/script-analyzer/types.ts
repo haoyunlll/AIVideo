@@ -44,6 +44,10 @@ export interface SceneSummary {
   title: string
   characters: string[]
   emotion: string
+  /** 上一镜收束动作，供下一块动作接力 */
+  endingAction?: string
+  /** 上一镜收束身体状态（优先于 endingAction） */
+  endState?: string
 }
 
 /** 第二阶段上下文 */
@@ -76,6 +80,10 @@ export interface ParsedScene {
   videoPrompt?: string
   dialogue?: string
   action?: string
+  /** 本镜开场身体与持物状态（=上一镜 endState） */
+  startState?: string
+  /** 本镜收束身体与持物状态（供下一镜 startState） */
+  endState?: string
   emotion?: string
   emotionNote?: string
   characters?: string[]

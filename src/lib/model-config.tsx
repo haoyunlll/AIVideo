@@ -23,7 +23,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   imageSize: '2K',
   // 视频配置 - 默认使用豆包 1.5pro
   videoProvider: 'doubao',
-  videoModel: 'doubao-seedance-1-5-pro-251215',
+  videoModel: 'doubao-seedance-2-0-mini-260615',
   videoApiKey: null,
   videoBaseUrl: null,
   videoResolution: '720p',

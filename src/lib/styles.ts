@@ -75,27 +75,17 @@ export function getStylePrompt(style: string): string {
 }
 
 /**
- * 获取角色风格提示词（用于人物三视图生成）
+ * 角色设定图统一彩铅风格（便于参考图过审；视频阶段再还原写实）
  */
-export function getCharacterStylePrompt(style: string): string {
-  const stylePrompts: Record<string, string> = {
-    // 真人类
-    'realistic_cinema': '真人演员风格，电影级角色造型，专业化妆造型，影视级质感',
-    'realistic_drama': '真人演员风格，现代短剧造型，自然妆容，都市时尚感',
-    'realistic_period': '真人演员风格，古装影视剧造型，古风妆发，考究服饰',
-    'realistic_idol': '真人演员风格，韩剧偶像造型，精致妆容，时尚穿搭',
-    // 动漫类
-    'anime_3d_cn': '国产3D动画角色，精致建模，玄幻风格角色设计',
-    'anime_2d_cn': '国风2D动画角色，精美国风角色设计',
-    'anime_jp': '日本动漫角色风格，精美角色设计',
-    'anime_chibi': 'Q版萌系角色设计，可爱大头小身',
-    // 艺术类
-    'art_watercolor': '水彩插画风格角色，柔和淡雅的人物描绘',
-    'art_ink': '水墨画风格人物，写意人物造型',
-    'art_oil': '油画风格人物肖像',
-    'art_comic': '美漫风格角色设计',
-  }
-  return stylePrompts[style] || stylePrompts['realistic_cinema']
+export const CHARACTER_PORTRAIT_STYLE_PROMPT =
+  '彩色铅笔手绘肖像风格，清晰彩铅笔触与纸张纹理，插画感角色设定图，非照片、非真人摄影、非超写实皮肤毛孔'
+
+/**
+ * 获取角色风格提示词（用于人物设定图 / 三视图生成）
+ * 固定彩铅，不再跟随项目写实风格，避免角色参考图触发真人审核
+ */
+export function getCharacterStylePrompt(_style?: string): string {
+  return CHARACTER_PORTRAIT_STYLE_PROMPT
 }
 
 /**

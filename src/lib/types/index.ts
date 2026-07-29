@@ -128,6 +128,15 @@ export interface SceneMetadata {
   cameraMovement?: CameraMovement
   duration?: number
   transition?: Transition
+  /** 本镜开场身体与持物状态（=上一镜 endState） */
+  startState?: string
+  /** 本镜收束身体与持物状态（供下一镜 startState） */
+  endState?: string
+  /** 与上一镜的具体衔接说明 */
+  continuity?: string
+  referenceSheetUrl?: string
+  referenceSheetKey?: string
+  referenceFrameCount?: number
 }
 
 /** 景别 */

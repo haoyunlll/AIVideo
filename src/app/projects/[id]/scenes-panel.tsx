@@ -40,9 +40,12 @@ import {
   Info,
   AlertTriangle,
   FileText,
-  ListFilter
+  ListFilter,
+  Upload,
+  Layers,
 } from "lucide-react"
 import { toast } from "sonner"
+import { VIDEO_REFERENCE_FRAME_COUNT } from "@/lib/video-reference"
 import { ScriptDialog } from "@/components/script-dialog"
 import { useModelConfig } from "@/lib/model-config"
 
@@ -64,6 +67,12 @@ interface Scene {
   metadata: {
     shotType?: string
     cameraMovement?: string
+    referenceSheetUrl?: string
+    referenceSheetKey?: string
+    referenceFrameCount?: number
+    startState?: string
+    endState?: string
+    continuity?: string
   } | null
 }
 
@@ -125,8 +134,8 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
 
   // 根据视频模型计算最大时长
   const getMaxVideoDuration = () => {
-    if (modelConfig.videoModel === 'doubao-seedance-2-0') {
-      return 15  // Seedance 2.0 支持 4-15 秒
+    if (modelConfig.videoModel === 'doubao-seedance-2-0' || modelConfig.videoModel.startsWith('doubao-seedance-2-0')) {
+      return 15  // Seedance 2.0 / Mini 支持 4-15 秒
     }
     return 12  // 其他模型（如 1.5pro）支持 4-12 秒
   }
@@ -221,6 +230,29 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     lastFrameSceneId: "" as string | null,
     ratio: "16:9" as "16:9" | "9:16"
   })
+  const [referenceDialogOpen, setReferenceDialogOpen] = useState(false)
+  const [referenceScene, setReferenceScene] = useState<Scene | null>(null)
+  const [referenceFrames, setReferenceFrames] = useState<(string | null)[]>(
+    () => Array(VIDEO_REFERENCE_FRAME_COUNT.recommended).fill(null)
+  )
+  const [referenceSheetUrl, setReferenceSheetUrl] = useState<string | null>(null)
+  const [generatingKeyframeIndex, setGeneratingKeyframeIndex] = useState<number | null>(null)
+  const [generatingAllKeyframes, setGeneratingAllKeyframes] = useState(false)
+  const [referenceDuration, setReferenceDuration] = useState(6)
+  const [referenceRatio, setReferenceRatio] = useState<"16:9" | "9:16">("16:9")
+
+  // 分镜列表刷新后，对话框内回显该分镜已保存的拼图
+  useEffect(() => {
+    if (!referenceDialogOpen || !referenceScene) return
+    const latest = scenes.find((s) => s.id === referenceScene.id)
+    if (!latest) return
+    setReferenceScene(latest)
+    const saved = latest.metadata?.referenceSheetUrl
+    if (saved) {
+      setReferenceSheetUrl((prev) => prev || saved)
+    }
+  }, [scenes, referenceDialogOpen, referenceScene?.id])
+
   const [formData, setFormData] = useState({
     sceneNumber: scenes.length + 1,
     title: "",
@@ -230,6 +262,9 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     emotion: "",
     shotType: "",
     cameraMovement: "",
+    startState: "",
+    endState: "",
+    continuity: "",
     characterIds: [] as string[]
   })
 
@@ -257,6 +292,9 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
           metadata: {
             shotType: formData.shotType,
             cameraMovement: formData.cameraMovement,
+            startState: formData.startState,
+            endState: formData.endState,
+            continuity: formData.continuity,
           }
         })
       })
@@ -277,6 +315,9 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
         emotion: "",
         shotType: "",
         cameraMovement: "",
+        startState: "",
+        endState: "",
+        continuity: "",
         characterIds: []
       })
       onUpdate()
@@ -300,8 +341,12 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
         body: JSON.stringify({
           ...formData,
           metadata: {
+            ...(selectedScene.metadata || {}),
             shotType: formData.shotType,
             cameraMovement: formData.cameraMovement,
+            startState: formData.startState,
+            endState: formData.endState,
+            continuity: formData.continuity,
           }
         })
       })
@@ -541,6 +586,180 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     }
   }
 
+  const openReferenceDialog = (scene: Scene) => {
+    // 用列表里最新的分镜数据（含 metadata 里已存的拼图）
+    const latest = scenes.find((s) => s.id === scene.id) || scene
+    setReferenceScene(latest)
+    setReferenceFrames(Array(VIDEO_REFERENCE_FRAME_COUNT.recommended).fill(null))
+    setReferenceSheetUrl(latest.metadata?.referenceSheetUrl || null)
+    setReferenceDuration(Math.min(maxVideoDuration, Math.max(4, 6)))
+    setReferenceRatio("16:9")
+    setReferenceDialogOpen(true)
+  }
+
+  const handleUploadReferenceSheet = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("请上传图片文件")
+      return
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      toast.error("图片请小于 12MB")
+      return
+    }
+    if (!referenceScene) return
+
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const dataUrl = reader.result as string
+      setReferenceSheetUrl(dataUrl)
+      try {
+        const res = await fetch("/api/generate/videos/reference", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sceneId: referenceScene.id,
+            projectId,
+            referenceImages: [dataUrl],
+            mode: "sheet",
+            persistSheetOnly: true,
+          }),
+        })
+        const data = await res.json()
+        if (res.ok && data.sheetUrl) {
+          setReferenceSheetUrl(data.sheetUrl)
+          onUpdate()
+        }
+        toast.success("已上传分解拼图")
+      } catch (err) {
+        console.warn("persist uploaded sheet failed", err)
+        toast.success("已选择拼图（尚未写入分镜，生成视频时会保存）")
+      }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleUploadReferenceFrame = async (index: number, file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("请上传图片文件")
+      return
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      toast.error("单张图片请小于 12MB")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      setReferenceFrames((prev) => {
+        const next = [...prev]
+        next[index] = dataUrl
+        return next
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleAiGenerateKeyframe = async (index?: number) => {
+    if (!referenceScene) return
+    const generateAll = typeof index !== "number"
+    if (generateAll) setGeneratingAllKeyframes(true)
+    else setGeneratingKeyframeIndex(index)
+
+    try {
+      const res = await fetch("/api/generate/scene-keyframes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneId: referenceScene.id,
+          count: referenceFrames.length,
+          // 一键只出整张拼图，不拆格
+          ...(generateAll ? { mode: "sheet", split: false } : { index }),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "分解图生成失败")
+
+      if (data.sheetUrl) {
+        setReferenceSheetUrl(data.sheetUrl)
+      }
+      if (Array.isArray(data.keyframes) && data.keyframes.length > 0) {
+        setReferenceFrames((prev) => {
+          const next = [...prev]
+          for (const kf of data.keyframes || []) {
+            if (typeof kf.index === "number" && kf.url) {
+              next[kf.index] = kf.url
+            }
+          }
+          return next
+        })
+      }
+      toast.success(
+        generateAll
+          ? data.sheetUrl
+            ? "已生成故事流拼图"
+            : `已生成 ${data.keyframes?.length || 0} 张分解图`
+          : `第 ${(index || 0) + 1} 张分解图已生成`
+      )
+      // 刷新分镜列表，写入 metadata.referenceSheetUrl 供下一镜衔接
+      onUpdate()
+    } catch (error) {
+      console.error(error)
+      toast.error(error instanceof Error ? error.message : "分解图生成失败")
+    } finally {
+      setGeneratingAllKeyframes(false)
+      setGeneratingKeyframeIndex(null)
+    }
+  }
+
+  const handleGenerateReferenceVideo = async () => {
+    if (!referenceScene) return
+    if (!referenceSheetUrl) {
+      toast.error("请先生成或上传一张动作分解拼图")
+      return
+    }
+
+    setGeneratingVideo(referenceScene.id)
+    setReferenceDialogOpen(false)
+
+    // 上一镜拼图：优先用分镜 metadata 里已存的 referenceSheetUrl
+    const prevScene = scenes
+      .filter((s) => s.sceneNumber < referenceScene.sceneNumber)
+      .sort((a, b) => b.sceneNumber - a.sceneNumber)[0]
+    const previousSheetUrl = prevScene?.metadata?.referenceSheetUrl || undefined
+
+    try {
+      const res = await fetch("/api/generate/videos/reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneId: referenceScene.id,
+          projectId,
+          referenceImages: [referenceSheetUrl],
+          mode: "sheet",
+          duration: referenceDuration,
+          ratio: referenceRatio,
+          dialogue: referenceScene.dialogue,
+          action: referenceScene.action,
+          emotion: referenceScene.emotion,
+          ...(previousSheetUrl ? { previousSheetUrl } : {}),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "多模态参考视频生成失败")
+      toast.success(
+        prevScene
+          ? `已生成视频（已承接第 ${prevScene.sceneNumber} 镜整段剧情）`
+          : "已用分解拼图生成视频"
+      )
+      onUpdate()
+    } catch (error) {
+      console.error(error)
+      toast.error(error instanceof Error ? error.message : "多模态参考视频生成失败")
+    } finally {
+      setGeneratingVideo(null)
+    }
+  }
+
   // 打开编辑对话框
   const openEditDialog = (scene: Scene) => {
     setSelectedScene(scene)
@@ -553,6 +772,9 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
       emotion: scene.emotion || "",
       shotType: scene.metadata?.shotType || "",
       cameraMovement: scene.metadata?.cameraMovement || "",
+      startState: scene.metadata?.startState || "",
+      endState: scene.metadata?.endState || "",
+      continuity: scene.metadata?.continuity || "",
       characterIds: scene.characterIds || []
     })
     setEditDialogOpen(true)
@@ -1253,6 +1475,139 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* 多模态参考：一张分解拼图生成视频 */}
+        <Dialog open={referenceDialogOpen} onOpenChange={setReferenceDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Layers className="w-5 h-5" />
+                AI 分解图生成视频
+              </DialogTitle>
+              <DialogDescription>
+                主流程：AI 生成故事流拼图 → 用拼图直接出视频。下一镜会带上上一镜整段剧情文案与整张拼图，按完整故事因果承接，而不是只锁末格一秒。
+              </DialogDescription>
+            </DialogHeader>
+
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription>
+                无需先单独生成分镜静帧。与首尾帧模式互斥；一张拼图即可，不必拆格上传。
+              </AlertDescription>
+            </Alert>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => handleAiGenerateKeyframe()}
+                disabled={generatingAllKeyframes}
+              >
+                {generatingAllKeyframes ? (
+                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4 mr-1" />
+                )}
+                AI 生成故事流拼图
+              </Button>
+              <Button size="sm" variant="outline" asChild disabled={generatingAllKeyframes}>
+                <label className="cursor-pointer inline-flex items-center">
+                  <Upload className="w-4 h-4 mr-1" />
+                  上传拼图
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleUploadReferenceSheet(file)
+                      e.target.value = ""
+                    }}
+                  />
+                </label>
+              </Button>
+              {referenceSheetUrl && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive"
+                  onClick={() => setReferenceSheetUrl(null)}
+                >
+                  清除
+                </Button>
+              )}
+            </div>
+
+            <div className="rounded-lg border bg-muted/40 min-h-[200px] flex items-center justify-center overflow-hidden relative">
+              {generatingAllKeyframes ? (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground py-16">
+                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <span className="text-sm">正在生成故事流拼图…</span>
+                </div>
+              ) : referenceSheetUrl ? (
+                <img
+                  src={referenceSheetUrl}
+                  alt="动作分解拼图"
+                  className="w-full h-auto object-contain max-h-[420px]"
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground py-16">
+                  <ImageIcon className="w-10 h-10 opacity-40" />
+                  <span className="text-sm">一张多分格分解图将显示在这里</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <div className="flex justify-between mb-2">
+                  <Label>视频时长</Label>
+                  <span className="text-sm text-muted-foreground">{referenceDuration} 秒</span>
+                </div>
+                <Slider
+                  value={[referenceDuration]}
+                  onValueChange={(v) => setReferenceDuration(v[0])}
+                  min={4}
+                  max={maxVideoDuration}
+                  step={1}
+                />
+              </div>
+              <div className="flex gap-3">
+                <label className={`flex-1 border rounded-lg p-3 cursor-pointer ${referenceRatio === "16:9" ? "border-primary bg-primary/5" : ""}`}>
+                  <input
+                    type="radio"
+                    className="sr-only"
+                    checked={referenceRatio === "16:9"}
+                    onChange={() => setReferenceRatio("16:9")}
+                  />
+                  <span className="text-sm font-medium">16:9 横屏</span>
+                </label>
+                <label className={`flex-1 border rounded-lg p-3 cursor-pointer ${referenceRatio === "9:16" ? "border-primary bg-primary/5" : ""}`}>
+                  <input
+                    type="radio"
+                    className="sr-only"
+                    checked={referenceRatio === "9:16"}
+                    onChange={() => setReferenceRatio("9:16")}
+                  />
+                  <span className="text-sm font-medium">9:16 竖屏</span>
+                </label>
+              </div>
+            </div>
+
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setReferenceDialogOpen(false)}>
+                取消
+              </Button>
+              <Button
+                onClick={handleGenerateReferenceVideo}
+                disabled={!referenceSheetUrl || generatingAllKeyframes}
+                className="bg-violet-600 hover:bg-violet-700 text-white"
+              >
+                <Film className="w-4 h-4 mr-2" />
+                用拼图生成视频
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {filteredScenes.length === 0 ? (
@@ -1280,6 +1635,7 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
               onDelete={() => handleDelete(scene.id)}
               onGenerateImage={() => handleGenerateImage(scene)}
               onGenerateVideo={() => handleGenerateVideo(scene)}
+              onGenerateReferenceVideo={() => openReferenceDialog(scene)}
               getStatusBadge={getStatusBadge}
               getVideoStatusBadge={getVideoStatusBadge}
             />
@@ -1400,7 +1756,36 @@ function SceneForm({
           id="scene-action"
           value={formData.action}
           onChange={(e) => setFormData({ ...formData, action: e.target.value })}
-          placeholder="人物动作和表演描述"
+          placeholder="起态→过程→终态，如：冲刺中右手反握出鞘约30%→继续前冲抽剑→出鞘约70%"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="scene-start-state">开场状态 startState</Label>
+        <Textarea
+          id="scene-start-state"
+          value={formData.startState}
+          onChange={(e) => setFormData({ ...formData, startState: e.target.value })}
+          placeholder="必须等于上一镜 endState，如：身体前冲，右手反握，剑出鞘约30%"
+          className="min-h-[60px]"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="scene-end-state">收束状态 endState</Label>
+        <Textarea
+          id="scene-end-state"
+          value={formData.endState}
+          onChange={(e) => setFormData({ ...formData, endState: e.target.value })}
+          placeholder="本镜结束时姿态，供下一镜 startState 接力"
+          className="min-h-[60px]"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="scene-continuity">镜间衔接 continuity</Label>
+        <Input
+          id="scene-continuity"
+          value={formData.continuity}
+          onChange={(e) => setFormData({ ...formData, continuity: e.target.value })}
+          placeholder="如：紧接上一镜反握出鞘30%，本镜继续前冲抽至半剑"
         />
       </div>
       <div className="space-y-2">
@@ -1472,6 +1857,7 @@ function SceneCard({
   onDelete,
   onGenerateImage,
   onGenerateVideo,
+  onGenerateReferenceVideo,
   getStatusBadge,
   getVideoStatusBadge
 }: {
@@ -1484,6 +1870,7 @@ function SceneCard({
   onDelete: () => void
   onGenerateImage: () => void
   onGenerateVideo: () => void
+  onGenerateReferenceVideo: () => void
   getStatusBadge: (status: string) => React.ReactNode
   getVideoStatusBadge: (status: string) => React.ReactNode
 }) {
@@ -1558,24 +1945,22 @@ function SceneCard({
 
   const hasImage = scene.imageKey || scene.imageUrl
   const hasVideo = scene.videoUrl
+  const sheetUrl = scene.metadata?.referenceSheetUrl
   const [videoError, setVideoError] = useState(false)
 
   return (
     <Card className="group hover:shadow-md transition-shadow">
       <div className="flex flex-col md:flex-row">
-        {/* 图片/视频区域 */}
+        {/* 预览：视频 > 静帧 > 分解拼图 > 空状态主入口 */}
         <div className="md:w-1/4 aspect-video md:aspect-auto bg-secondary/50 relative overflow-hidden">
           {hasVideo && !videoError ? (
-            // 显示视频
             <video 
               src={scene.videoUrl || ''} 
               className="w-full h-full object-cover"
               muted
               loop
               onMouseEnter={(e) => {
-                e.currentTarget.play().catch(() => {
-                  // 播放被中断或失败，正常情况
-                })
+                e.currentTarget.play().catch(() => {})
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.pause()
@@ -1586,7 +1971,6 @@ function SceneCard({
               }}
             />
           ) : videoError && hasVideo ? (
-            // 视频加载失败，显示错误提示
             <div className="absolute inset-0 flex items-center justify-center bg-secondary">
               <div className="text-center">
                 <Video className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
@@ -1594,34 +1978,43 @@ function SceneCard({
               </div>
             </div>
           ) : imageUrl ? (
-            // 显示图片
             <img 
               src={imageUrl} 
               alt={scene.title || `分镜 ${scene.sceneNumber}`}
               className="w-full h-full object-cover"
             />
+          ) : sheetUrl ? (
+            <button
+              type="button"
+              className="absolute inset-0 w-full h-full cursor-pointer"
+              onClick={onGenerateReferenceVideo}
+            >
+              <img
+                src={sheetUrl}
+                alt="动作分解拼图"
+                className="w-full h-full object-cover"
+              />
+            </button>
           ) : (
-            // 空状态
             <div className="absolute inset-0 flex items-center justify-center">
-              {generatingImage ? (
+              {generatingVideo ? (
                 <div className="text-center">
                   <Loader2 className="w-8 h-8 animate-spin text-muted-foreground mx-auto mb-2" />
-                  <p className="text-xs text-muted-foreground">生成图片...</p>
+                  <p className="text-xs text-muted-foreground">生成视频...</p>
                 </div>
               ) : (
                 <Button 
                   variant="ghost" 
-                  className="flex flex-col items-center gap-2"
-                  onClick={onGenerateImage}
+                  className="flex flex-col items-center gap-2 h-auto py-4"
+                  onClick={onGenerateReferenceVideo}
                 >
-                  <ImageIcon className="w-8 h-8 text-muted-foreground" />
-                  <span className="text-xs">点击生成分镜图</span>
+                  <Layers className="w-8 h-8 text-muted-foreground" />
+                  <span className="text-xs">AI 分解图生成视频</span>
                 </Button>
               )}
             </div>
           )}
 
-          {/* 视频播放标识 */}
           {hasVideo && (
             <div className="absolute top-2 right-2">
               <Badge className="bg-green-600 text-white">
@@ -1631,7 +2024,22 @@ function SceneCard({
             </div>
           )}
 
-          {/* 分镜序号 */}
+          {sheetUrl && (
+            <div className="absolute bottom-2 right-2">
+              <Badge
+                variant="secondary"
+                className="bg-black/60 text-white cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onGenerateReferenceVideo()
+                }}
+              >
+                <Layers className="w-3 h-3 mr-1" />
+                拼图
+              </Badge>
+            </div>
+          )}
+
           <div className="absolute top-2 left-2">
             <Badge variant="secondary" className="bg-black/60 text-white">
               {scene.sceneNumber}
@@ -1651,6 +2059,11 @@ function SceneCard({
               {scene.metadata?.cameraMovement && (
                 <Badge variant="outline">{scene.metadata.cameraMovement}</Badge>
               )}
+              {sheetUrl && (
+                <Badge variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
+                  已有分解拼图
+                </Badge>
+              )}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1663,16 +2076,23 @@ function SceneCard({
                   <Edit className="w-4 h-4 mr-2" />
                   编辑
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={onGenerateReferenceVideo}
+                  disabled={generatingVideo}
+                >
+                  <Layers className="w-4 h-4 mr-2" />
+                  AI 分解图生成视频
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={onGenerateImage} disabled={generatingImage}>
                   <ImageIcon className="w-4 h-4 mr-2" />
-                  {hasImage ? "重新生成图片" : "生成分镜图"}
+                  {hasImage ? "重新生成图片" : "生成图片"}
                 </DropdownMenuItem>
                 <DropdownMenuItem 
                   onClick={onGenerateVideo} 
                   disabled={generatingVideo || !hasImage}
                 >
                   <Film className="w-4 h-4 mr-2" />
-                  {hasVideo ? "重新生成视频" : "生成视频"}
+                  {hasVideo ? "首尾帧重生成视频" : "首尾帧生成视频"}
                 </DropdownMenuItem>
                 {hasVideo && (
                   <DropdownMenuItem onClick={handleDownloadVideo} disabled={downloading}>
@@ -1713,60 +2133,52 @@ function SceneCard({
             )}
           </div>
 
-          {/* 快捷操作按钮 */}
+          {/* 主入口：分解图→视频；生成图片保留为次要 */}
           <div className="flex gap-2 mt-3 items-center flex-wrap">
-            {!hasImage && (
+            <Button
+              size="sm"
+              className="bg-violet-600 hover:bg-violet-700 text-white"
+              onClick={onGenerateReferenceVideo}
+              disabled={generatingVideo}
+            >
+              {generatingVideo ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Layers className="w-4 h-4 mr-1" />
+              )}
+              {hasVideo ? "AI 分解图重生成" : "AI 分解图生成视频"}
+            </Button>
+            <Button 
+              size="sm" 
+              variant="outline"
+              onClick={onGenerateImage}
+              disabled={generatingImage}
+            >
+              {generatingImage ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <ImageIcon className="w-4 h-4 mr-1" />
+              )}
+              {hasImage ? "重新生成图片" : "生成图片"}
+            </Button>
+            {hasImage && !hasVideo && (
               <Button 
                 size="sm" 
                 variant="outline"
-                onClick={onGenerateImage}
-                disabled={generatingImage}
+                onClick={onGenerateVideo}
+                disabled={generatingVideo}
               >
-                {generatingImage ? (
+                {generatingVideo ? (
                   <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                 ) : (
-                  <ImageIcon className="w-4 h-4 mr-1" />
+                  <Film className="w-4 h-4 mr-1" />
                 )}
-                生成图片
+                首尾帧生成视频
               </Button>
             )}
-            {hasImage && (
-              <>
-                <Button 
-                  size="sm" 
-                  variant="outline"
-                  onClick={onGenerateImage}
-                  disabled={generatingImage}
-                >
-                  {generatingImage ? (
-                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                  ) : (
-                    <Sparkles className="w-4 h-4 mr-1" />
-                  )}
-                  重新生成图片
-                </Button>
-                {!hasVideo && (
-                  <>
-                    <Button 
-                      size="sm" 
-                      className="bg-blue-600 hover:bg-blue-700 text-white"
-                      onClick={onGenerateVideo}
-                      disabled={generatingVideo}
-                    >
-                      {generatingVideo ? (
-                        <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                      ) : (
-                        <Film className="w-4 h-4 mr-1" />
-                      )}
-                      生成视频
-                    </Button>
-                    <span className="text-xs text-muted-foreground">
-                      预估 {estimatedDuration} 秒
-                    </span>
-                  </>
-                )}
-              </>
-            )}
+            <span className="text-xs text-muted-foreground">
+              预估 {estimatedDuration} 秒
+            </span>
           </div>
         </div>
       </div>

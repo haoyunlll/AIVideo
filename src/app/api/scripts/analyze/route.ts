@@ -4,6 +4,7 @@ import { getStylePrompt } from "@/lib/styles"
 import { runPhase1 } from "@/lib/script-parser"
 import { chunkScript } from "@/lib/script-parser"
 import type { Phase1Character } from "@/lib/script-parser"
+import { SCENE_STATE_CONTINUITY_RULES, buildStateMetadataFields } from "@/lib/scene-continuity"
 
 // 风格描述映射
 const styleDescriptions = Object.freeze({
@@ -192,7 +193,10 @@ ${existingCharacters?.length > 0
       "title": "分镜标题",
       "description": "场景画面描述（详细描述环境，光线、构图，用于生成视频分镜参考图）",
       "dialogue": "对白内容",
-      "action": "动作/表演描述",
+      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "startState": "本镜开场身体与持物状态（必须等于上一镜 endState）",
+      "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
+      "continuity": "与上一镜的具体过渡（禁止只写硬切）",
       "emotion": "情绪氛围",
       "shotType": "景别（远景、全景、中景、近景、特写）",
       "cameraMovement": "镜头运动（固定、推镜、拉镜、摇镜、跟拍）",
@@ -223,12 +227,21 @@ ${existingCharacters?.length > 0
 ### 6. 优先保障叙事连贯性
 - 为氛围镜头、情感高潮和复杂对话允许延长单镜时长（不超过12秒）
 
+### 7. 镜间动作与身体状态衔接（必须）
+- 上一镜 endState = 下一镜 startState；物理状态必须一致（握姿、出鞘进度、站姿/冲刺、朝向）
+- action 写成「起态→过程→终态」，第一句承接上一镜收束；禁止空泛「拔剑」
+- description 开场保持人物朝向与空间连续；禁止无过渡瞬移或换握姿
+- 同一空间连续镜要视线顺接
+
+${SCENE_STATE_CONTINUITY_RULES}
+
 注意：
 1. 分镜数量根据内容合理拆分
 2. 每个场景应该是一个独立的视频分镜
 3. 场景描述要详细，包含视觉元素、光影效果
 4. 人物外貌描述要具体，便于生成角色造型图
-5. 景别和镜头运动要符合影视剧拍摄规范${styleContext}`
+5. 景别和镜头运动要符合影视剧拍摄规范
+6. 相邻分镜必须动作与身体状态首尾相接${styleContext}`
 
     const aiResult = await invokeLLM(
       [{ role: "user", content: analyzePrompt }],
@@ -334,6 +347,7 @@ ${existingCharacters?.length > 0
               metadata: {
                 shotType: scene.shotType || "",
                 cameraMovement: scene.cameraMovement || "",
+                ...buildStateMetadataFields(scene),
               },
               status: 'pending',
             }

@@ -86,15 +86,9 @@ export async function POST(request: NextRequest) {
         if (charApp.selectedAppearance && charApp.selectedAppearance.imageKey) {
           console.log(`[Scene Image] Character ${charApp.characterName}: using selected appearance imageKey`)
           const imageKey = charApp.selectedAppearance.imageKey
-          // 构造完整的公网 URL
-          const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-          if (endpoint) {
-            return `${endpoint}/${imageKey}`
-          } else {
-            // 降级：使用域名 + /api/images
-            const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
-            return `${domain}/api/images?key=${imageKey}`
-          }
+          // 走本服务图片接口，便于后续转 base64；避免直接把 127.0.0.1 MinIO 地址交给火山
+          const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+          return `${domain}/api/images?key=${encodeURIComponent(imageKey)}`
         } else if (charApp.selectedAppearance && charApp.selectedAppearance.imageUrl && charApp.selectedAppearance.imageUrl.startsWith('http')) {
           // 如果 imageUrl 已经是完整的公网 URL，直接使用
           console.log(`[Scene Image] Character ${charApp.characterName}: using selected appearance imageUrl (HTTP)`)
@@ -113,17 +107,11 @@ export async function POST(request: NextRequest) {
             if (data) {
               const key = (data as any).front_view_key || (data as any).image_url
               if (key) {
-                // 构造完整的公网 URL
-                const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-                if (endpoint && !key.startsWith('http')) {
-                  return `${endpoint}/${key}`
-                } else if (key.startsWith('http')) {
+                if (typeof key === 'string' && key.startsWith('http')) {
                   return key
-                } else {
-                  // 降级：使用域名 + /api/images
-                  const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
-                  return `${domain}/api/images?key=${key}`
                 }
+                const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+                return `${domain}/api/images?key=${encodeURIComponent(key)}`
               }
             }
           }
@@ -164,19 +152,10 @@ export async function POST(request: NextRequest) {
                 console.log(`[Scene Image] Character ${c.name}: using HTTP URL ${key}`)
                 return key
               }
-              // 构造完整的公网 URL
-              const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-              if (endpoint) {
-                const url = `${endpoint}/${key}`
-                console.log(`[Scene Image] Character ${c.name}: using public URL ${url}`)
-                return url
-              } else {
-                // 降级：使用域名 + /api/images
-                const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
-                const url = `${domain}/api/images?key=${key}`
-                console.log(`[Scene Image] Character ${c.name}: using API URL ${url}`)
-                return url
-              }
+              const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+              const url = `${domain}/api/images?key=${encodeURIComponent(key)}`
+              console.log(`[Scene Image] Character ${c.name}: using API URL ${url}`)
+              return url
             })
             .filter(Boolean)
         }
@@ -194,15 +173,8 @@ export async function POST(request: NextRequest) {
             if (!key) return null
             // 如果是完整 URL 直接使用
             if (key.startsWith('http')) return key
-            // 构造完整的公网 URL
-            const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-            if (endpoint) {
-              return `${endpoint}/${key}`
-            } else {
-              // 降级：使用域名 + /api/images
-              const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://localhost:5000'
-              return `${domain}/api/images?key=${key}`
-            }
+            const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+            return `${domain}/api/images?key=${encodeURIComponent(key)}`
           })
           .filter(Boolean) as string[]
       }
@@ -259,48 +231,42 @@ export async function POST(request: NextRequest) {
     }
 
     // 使用系统自带的图像生成服务
-    // 关键改进：传入人物参考图以保持一致性
+    // 关键改进：传入人物参考图以保持一致性（火山 Seedream 支持；gpt-image-2 会自动忽略参考图走文生图）
     const result = await generateImage(prompt, {
       size: '2K',
       watermark: false,
       image: characterReferenceImages.length > 0 ? characterReferenceImages : undefined,
     })
 
-    const imageUrl = result.urls[0]
-    console.log("Image generated successfully:", imageUrl)
+    const imageUrl =
+      result.urls[0] ||
+      (result.b64List?.[0] ? `data:image/png;base64,${result.b64List[0]}` : '')
+    if (!imageUrl) {
+      throw new Error('图像生成未返回可用图片')
+    }
+    console.log(
+      "Image generated successfully:",
+      imageUrl.startsWith('data:') ? `[data-uri length=${imageUrl.length}]` : imageUrl
+    )
 
     // 下载图片（禁用代理）
     const imageBuffer = await downloadFile(imageUrl)
 
-    // 尝试上传到对象存储（使用 S3Storage）
+    // 上传到对象存储（MinIO / S3 / OSS），失败则落本地 public/
     let fileKey: string | null = null
-    let viewUrl: string = imageUrl // 默认使用原始 URL
+    let viewUrl: string = imageUrl
 
     try {
-      // 使用 ali-oss SDK 上传（支持设置 ACL）
-      const OSS = await import('ali-oss')
-      const ossClient = new OSS.default({
-        region: process.env.S3_REGION || 'oss-cn-chengdu',
-        accessKeyId: process.env.S3_ACCESS_KEY || '',
-        accessKeySecret: process.env.S3_SECRET_KEY || '',
-        bucket: process.env.S3_BUCKET || 'drama-studio',
-        secure: true,
-      })
-
-      // 上传到 OSS
+      const { uploadFile, getPublicUrl } = await import("@/lib/storage")
       fileKey = `scenes/${sceneId}/image_${Date.now()}.png`
-      await ossClient.put(fileKey, imageBuffer)
-
-      // 设置为公开读取
-      await ossClient.putACL(fileKey, 'public-read')
-
-      // 生成公网 URL
-      const endpoint = process.env.S3_ENDPOINT || process.env.COZE_BUCKET_ENDPOINT_URL
-      viewUrl = `${endpoint}/${fileKey}`
-
-      console.log("Image uploaded to OSS:", fileKey)
+      viewUrl = await uploadFile(fileKey, imageBuffer, "image/png")
+      if (!viewUrl) {
+        viewUrl = getPublicUrl(fileKey)
+      }
+      console.log("Image uploaded to object storage:", fileKey)
+      console.log("Image URL:", viewUrl)
     } catch (ossError) {
-      console.warn("Failed to upload to OSS, saving to local:", ossError)
+      console.warn("Failed to upload to object storage, saving to local:", ossError)
       
       // 对象存储不可用，保存到本地 public 目录
       try {

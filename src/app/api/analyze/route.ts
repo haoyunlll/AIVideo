@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { invokeLLM, invokeLLMWithStream, parseLLMJson, extractHeaders, DEFAULT_LLM_MODEL, getServerAIConfig, getUserLLMConfig } from "@/lib/ai"
 import { invokeCozeDirect, getCozeDirectConfig } from "@/lib/ai/coze-direct"
 import { memoryCharacters, memoryScenes, generateId } from "@/lib/memory-storage"
+import { SCENE_STATE_CONTINUITY_RULES, buildStateMetadataFields } from "@/lib/scene-continuity"
 
 // 增加超时配置 - Next.js API 路由最大执行时间
 export const maxDuration = 300 // 5分钟
@@ -98,7 +99,10 @@ export async function POST(request: NextRequest) {
       "title": "分镜标题",
       "description": "场景画面描述（详细描述环境、光线、构图，用于生成视频分镜参考图）",
       "dialogue": "对白内容",   // 某人物："..."  或  旁白（画外音）："..."
-      "action": "动作/表演描述",
+      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "startState": "本镜开场身体与持物状态（必须等于上一镜 endState）",
+      "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
+      "continuity": "与上一镜的具体过渡（禁止只写硬切）",
       "emotion": "情绪氛围（如：紧张、温馨、悲伤）",
       "shotType": "景别（如：远景、全景、中景、近景、特写）",
       "cameraMovement": "镜头运动（如：固定、推镜、拉镜、摇镜、跟拍）",
@@ -150,13 +154,23 @@ export async function POST(request: NextRequest) {
 ### 4. 核心目标
 你的目标是生成一个**连贯、细腻、不赶时间**的视觉化分镜脚本，而不是一个高度压缩的提要。每个分镜都应该是故事叙述的有机组成部分，让观众能够沉浸在故事世界中。
 
+### 5. 镜间动作与身体状态衔接（必须遵守）
+相邻分镜必须「动作接力」，避免硬切跳戏：
+- **上一镜的 endState** = 下一镜的 startState。物理状态必须一致（握姿、出鞘进度、站姿/冲刺、朝向）。
+- \`action\` 必须写成「起态→过程→终态」，第一句承接上一镜收束；禁止只写「拔剑」「冲刺」等空泛词。
+- \`description\` 开场需保持人物站位、朝向、持物、情绪连续；若必须换景/跳切，在 continuity 里写清过渡，禁止无交代地瞬移或换握姿。
+- 同一空间连续镜头：视线与身体朝向要顺；对话反应镜要从上一镜说话人的落点接到听者反应。
+
+${SCENE_STATE_CONTINUITY_RULES}
+
 注意：
 1. 分镜数量根据内容合理拆分，具体根据对话量和场景复杂度调整
 2. 每个场景应该是一个独立的视频分镜
 3. 场景描述要详细，包含视觉元素、光影效果
 4. 人物外貌描述要具体，便于生成角色造型图
 5. 景别和镜头运动要符合影视剧拍摄规范
-6. 这是短剧视频分镜，不是漫画${styleContext}`
+6. 这是短剧视频分镜，不是漫画
+7. 必须保证相邻分镜动作首尾相接，形成可剪辑的连续时间线${styleContext}`
 
   try {
     const messages = [
@@ -171,32 +185,43 @@ export async function POST(request: NextRequest) {
     // 逻辑：
     // 1. 如果 provider 不是 doubao（如 deepseek、kimi、openai 等），使用自定义 LLM Provider
     // 2. 如果 provider 是 doubao，但是模型名是火山引擎模型（以 doubao-seed- 开头），也应该使用自定义 LLM Provider
-    // 3. 如果 provider 是 doubao 且没有配置 API Key，使用 Coze SDK 或 Coze Direct
-    const isVolcengineModel = llmConfig.model?.startsWith('doubao-seed-')
-    const useCustomLLMProvider = llmConfig.provider &&
-      (llmConfig.provider !== 'doubao' || isVolcengineModel)
+    // 3. 如果配置了火山引擎 Base URL + API Key，走 OpenAI 兼容接口
+    // 4. 如果 provider 是 doubao 且没有配置 API Key，使用 Coze SDK 或 Coze Direct
+    const isVolcengineModel = !!llmConfig.model?.startsWith('doubao-seed-')
+    const isVolcengineBaseUrl =
+      !!llmConfig.baseUrl &&
+      (llmConfig.baseUrl.includes('volces.com') || llmConfig.baseUrl.includes('volcengine.com'))
+    const useCustomLLMProvider =
+      (llmConfig.provider && (llmConfig.provider !== 'doubao' || isVolcengineModel)) ||
+      (isVolcengineBaseUrl && !!llmConfig.apiKey)
 
     if (useCustomLLMProvider) {
       // 使用用户配置的自定义 LLM Provider（DeepSeek、Kimi、火山引擎等）
       console.log('[Analyze] Using custom LLM provider:', llmConfig.provider, 'model:', llmConfig.model)
 
       // 如果选择了自定义 Provider 但是没有配置 API Key，回退到 Coze SDK 或 Coze Direct
-      if (!llmConfig.apiKey && !isVolcengineModel) {
+      if (!llmConfig.apiKey && !isVolcengineModel && !isVolcengineBaseUrl) {
         console.warn('[Analyze] Custom LLM provider selected but no API key configured, falling back to Coze SDK')
+      } else if (!llmConfig.apiKey) {
+        console.warn('[Analyze] Volcengine/custom path selected but LLM API key missing, falling back to Coze SDK')
       } else {
         try {
           // 导入 OpenAI 兼容客户端和模型名称映射
           const { OpenAICompatibleClient, getActualModelName } = await import('@/lib/ai/openai-compatible')
 
           // 获取实际的模型名称（将 Coze 平台的模型名映射到各 Provider 的实际模型名）
-          const actualModelName = getActualModelName(llmConfig.provider, llmConfig.model)
+          const actualModelName = getActualModelName(
+            isVolcengineBaseUrl ? 'doubao' : llmConfig.provider,
+            llmConfig.model || DEFAULT_LLM_MODEL
+          )
           console.log('[Analyze] Model name mapping:', {
             original: llmConfig.model,
-            actual: actualModelName
+            actual: actualModelName,
+            baseUrl: llmConfig.baseUrl,
           })
 
           const client = new OpenAICompatibleClient({
-            apiKey: llmConfig.apiKey || '',
+            apiKey: llmConfig.apiKey,
             baseUrl: llmConfig.baseUrl || 'https://api.deepseek.com',
             model: actualModelName,
           })
@@ -278,6 +303,9 @@ export async function POST(request: NextRequest) {
           description: string
           dialogue: string
           action: string
+          startState?: string
+          endState?: string
+          continuity?: string
           emotion: string
           shotType: string
           cameraMovement: string
@@ -518,6 +546,7 @@ export async function POST(request: NextRequest) {
                 metadata: {
                   shotType: scene.shotType,
                   cameraMovement: scene.cameraMovement,
+                  ...buildStateMetadataFields(scene),
                 },
                 status: 'pending',
               }
@@ -551,6 +580,11 @@ export async function POST(request: NextRequest) {
               characterIds,
               status: 'pending',
               createdAt: new Date().toISOString(),
+              metadata: {
+                shotType: scene.shotType,
+                cameraMovement: scene.cameraMovement,
+                ...buildStateMetadataFields(scene),
+              },
             })
           }
         }

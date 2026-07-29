@@ -103,6 +103,12 @@ interface Scene {
   metadata: {
     shotType?: string
     cameraMovement?: string
+    referenceSheetUrl?: string
+    referenceSheetKey?: string
+    referenceFrameCount?: number
+    startState?: string
+    endState?: string
+    continuity?: string
   } | null
 }
 

@@ -8,6 +8,7 @@ import { HeaderUtils, S3Storage } from "coze-coding-dev-sdk"
 import { generateImage } from "@/lib/ai"
 import { downloadFile } from "@/lib/utils"
 import { getSupabaseClient, isDatabaseConfigured } from "@/storage/database/supabase-client"
+import { CHARACTER_PORTRAIT_STYLE_PROMPT } from "@/lib/styles"
 
 // 获取人物库专用的数据库客户端（与人物库 API 保持一致）
 function getCharacterLibraryClient() {
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
     const genderText = gender ? (gender === 'male' ? '男性' : gender === 'female' ? '女性' : '人物') : '人物'
     const desc = appearance || '角色形象'
 
-    // 构建详细的提示词
+    // 构建详细的提示词（固定彩铅风格）
     let prompt = `生成${name}的角色设定图，${genderText}，${desc}`
 
     // 添加性格特征
@@ -80,12 +81,10 @@ export async function POST(request: NextRequest) {
       prompt += `，性格${personality}`
     }
 
-    // 添加风格
-    const stylePrompt = getStylePrompt(style || 'realistic')
-    prompt += `，${stylePrompt}`
+    prompt += `，${CHARACTER_PORTRAIT_STYLE_PROMPT}`
 
     // 添加背景和质量要求
-    prompt += '，正面视图，白色背景，高质量，细节丰富，用于角色设定参考'
+    prompt += '，正面视图，白色背景，细节丰富，用于角色设定参考'
 
     console.log('Generating character image with prompt:', prompt.substring(0, 150))
 
@@ -217,15 +216,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/**
- * 根据风格获取提示词
- */
-function getStylePrompt(style: string): string {
-  const styleMap: Record<string, string> = {
-    'realistic': '写实风格，真实感，细腻的皮肤纹理，光影效果自然',
-    'anime': '动漫风格，二次元，精美的线条，明亮的色彩',
-    'cartoon': '卡通风格，可爱，活泼，圆润的线条',
-    'oil_painting': '油画风格，厚重的笔触，丰富的色彩层次',
-  }
-  return styleMap[style] || '写实风格，真实感，细腻的皮肤纹理，光影效果自然'
+/** @deprecated 人物图已统一彩铅，保留避免外部引用报错 */
+function getStylePrompt(_style: string): string {
+  return CHARACTER_PORTRAIT_STYLE_PROMPT
 }

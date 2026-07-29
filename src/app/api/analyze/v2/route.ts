@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { twoPhaseAnalyze, AnalyzeResult, GlobalScanResult } from "@/lib/script-analyzer"
 import { generateId } from "@/lib/memory-storage"
 import { ShotSegment, generateSeedancePrompt, calculateSceneDuration } from "@/lib/types"
+import { buildStateMetadataFields } from "@/lib/scene-continuity"
 
 // 增加超时配置 - Next.js API 路由最大执行时间
 export const maxDuration = 300 // 5分钟
@@ -377,6 +378,7 @@ async function saveResults(
             durationMs: scene.durationMs,
             emotionNote: scene.emotionNote,
             continuity: scene.continuity,
+            ...buildStateMetadataFields(scene),
           },
           status: 'pending',
         })
@@ -411,6 +413,7 @@ async function saveResults(
           firstFrameNeeded: true,
           lastFrameNeeded: true,
           durationMs: scene.durationMs,
+          ...buildStateMetadataFields(scene),
         },
       })
       savedSceneIds.push(sceneId)

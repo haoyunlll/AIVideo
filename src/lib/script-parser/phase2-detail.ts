@@ -79,7 +79,8 @@ export async function runPhase2Chunk(
   const lastShotSummary =
     `[分镜${lastScene.sceneNumber}] ${lastScene.title}：${lastScene.location || '未知地点'}，` +
     `${lastScene.timeOfDay || ''}，${lastScene.shotType || '中景'}，` +
-    `${lastScene.action || lastScene.description?.slice(0, 50) || ''}，情绪：${lastScene.emotion || '中性'}`
+    `收束状态：${lastScene.endState || lastScene.action || lastScene.description?.slice(0, 50) || ''}，` +
+    `情绪：${lastScene.emotion || '中性'}`
 
   return {
     success: true,

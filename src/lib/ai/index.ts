@@ -119,7 +119,13 @@ export interface VideoGenerationOptions {
   watermark?: boolean
   /** 尾帧图片 URL（用于首尾帧模式） */
   lastFrameUrl?: string
+  /** 多模态参考图（与首尾帧互斥，建议 4-6 张，最多 9 张） */
+  referenceImageUrls?: string[]
 }
+
+/** 多模态参考分解图推荐数量 */
+export { VIDEO_REFERENCE_FRAME_COUNT } from '@/lib/video-reference'
+import { VIDEO_REFERENCE_FRAME_COUNT } from '@/lib/video-reference'
 
 // ==================== 系统默认模型配置 ====================
 
@@ -139,7 +145,7 @@ export const DEFAULT_IMAGE_MODEL = 'doubao-seedream-4-0-250828'
 export const DEFAULT_IMAGE_SIZE = '2K'
 
 /** 系统默认视频模型 */
-export const DEFAULT_VIDEO_MODEL = 'doubao-seedance-1-5-pro-251215'
+export const DEFAULT_VIDEO_MODEL = 'doubao-seedance-2-0-mini-260615'
 
 /** 可用的 LLM 模型列表 */
 export const AVAILABLE_LLM_MODELS = [
@@ -272,6 +278,31 @@ export async function getUserLLMConfig(): Promise<{
   } catch (err) {
     console.log('[AI Config] Error getting LLM config:', err instanceof Error ? err.message : String(err))
   }
+
+  // 回退到环境变量（.env.local 中的 LLM_API_KEY / LLM_BASE_URL）
+  const envApiKey = process.env.LLM_API_KEY
+  const envBaseUrl = process.env.LLM_BASE_URL
+  const envModel = process.env.LLM_MODEL || DEFAULT_LLM_MODEL
+  const envProvider = process.env.LLM_PROVIDER
+  if (envApiKey) {
+    const isVolcengine =
+      !!envBaseUrl &&
+      (envBaseUrl.includes('volces.com') || envBaseUrl.includes('volcengine.com'))
+    console.log('[AI Config] Got LLM config from environment:', {
+      provider: envProvider || (isVolcengine ? 'doubao' : 'openai-compatible'),
+      hasApiKey: true,
+      hasBaseUrl: !!envBaseUrl,
+      model: envModel,
+      isVolcengine,
+    })
+    return {
+      // 火山引擎：provider 用 doubao + doubao-seed-* 模型，分析路由会走 OpenAI 兼容客户端
+      provider: envProvider || (isVolcengine ? 'doubao' : 'openai-compatible'),
+      apiKey: envApiKey,
+      baseUrl: envBaseUrl,
+      model: envModel,
+    }
+  }
   
   // 返回默认配置
   return {
@@ -295,17 +326,17 @@ export async function getUserImageConfig(): Promise<{
     const { getSettingsFromMemory } = await import('@/lib/memory-store')
     const memorySettings = getSettingsFromMemory()
     
-    if (memorySettings?.image_api_key || memorySettings?.image_provider) {
+    if (memorySettings?.image_api_key) {
       console.log('[AI Config] Got image config from memory:', {
         provider: memorySettings.image_provider,
-        hasApiKey: !!memorySettings.image_api_key,
+        hasApiKey: true,
         model: memorySettings.image_model,
       })
       return {
         provider: (memorySettings.image_provider as string) || 'doubao',
         apiKey: memorySettings.image_api_key as string | undefined,
-        baseUrl: memorySettings.image_base_url as string | undefined,
-        model: memorySettings.image_model as string | undefined,
+        baseUrl: (memorySettings.image_base_url as string | undefined) || process.env.IMAGE_BASE_URL,
+        model: (memorySettings.image_model as string | undefined) || process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
         size: memorySettings.image_size as string | undefined,
       }
     }
@@ -321,17 +352,17 @@ export async function getUserImageConfig(): Promise<{
           .select('image_provider, image_api_key, image_base_url, image_model, image_size')
           .maybeSingle()
         
-        if (!error && data) {
+        if (!error && data?.image_api_key) {
           console.log('[AI Config] Got image config from database:', {
             provider: data.image_provider,
-            hasApiKey: !!data.image_api_key,
+            hasApiKey: true,
             model: data.image_model,
           })
           return {
             provider: data.image_provider || 'doubao',
             apiKey: data.image_api_key || undefined,
-            baseUrl: data.image_base_url || undefined,
-            model: data.image_model || undefined,
+            baseUrl: data.image_base_url || process.env.IMAGE_BASE_URL || undefined,
+            model: data.image_model || process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
             size: data.image_size || undefined,
           }
         }
@@ -342,6 +373,24 @@ export async function getUserImageConfig(): Promise<{
   } catch (err) {
     console.log('[AI Config] Error getting image config:', err instanceof Error ? err.message : String(err))
   }
+
+  // 回退到环境变量（.env.local 中的 IMAGE_API_KEY / IMAGE_BASE_URL）
+  const envApiKey = process.env.IMAGE_API_KEY
+  const envBaseUrl = process.env.IMAGE_BASE_URL
+  if (envApiKey && envBaseUrl) {
+    console.log('[AI Config] Got image config from environment:', {
+      hasApiKey: true,
+      baseUrl: envBaseUrl,
+      model: process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+    })
+    return {
+      provider: process.env.IMAGE_PROVIDER || 'doubao',
+      apiKey: envApiKey,
+      baseUrl: envBaseUrl,
+      model: process.env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      size: process.env.IMAGE_SIZE || DEFAULT_IMAGE_SIZE,
+    }
+  }
   
   // 返回默认配置
   return {
@@ -351,7 +400,7 @@ export async function getUserImageConfig(): Promise<{
 
 /**
  * 获取用户视频配置
- * 优先级：内存 → 数据库 → 默认值
+ * 优先级：内存 → 数据库 → 环境变量
  */
 export async function getUserVideoConfig(): Promise<{
   provider: string
@@ -366,17 +415,17 @@ export async function getUserVideoConfig(): Promise<{
     const { getSettingsFromMemory } = await import('@/lib/memory-store')
     const memorySettings = getSettingsFromMemory()
     
-    if (memorySettings?.video_api_key || memorySettings?.video_provider) {
+    if (memorySettings?.video_api_key) {
       console.log('[AI Config] Got video config from memory:', {
         provider: memorySettings.video_provider,
-        hasApiKey: !!memorySettings.video_api_key,
+        hasApiKey: true,
         model: memorySettings.video_model,
       })
       return {
         provider: (memorySettings.video_provider as string) || 'doubao',
         apiKey: memorySettings.video_api_key as string | undefined,
-        baseUrl: memorySettings.video_base_url as string | undefined,
-        model: memorySettings.video_model as string | undefined,
+        baseUrl: (memorySettings.video_base_url as string | undefined) || process.env.VIDEO_BASE_URL,
+        model: (memorySettings.video_model as string | undefined) || process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL,
         resolution: memorySettings.video_resolution as string | undefined,
         ratio: memorySettings.video_ratio as string | undefined,
       }
@@ -393,17 +442,17 @@ export async function getUserVideoConfig(): Promise<{
           .select('video_provider, video_api_key, video_base_url, video_model, video_resolution, video_ratio')
           .maybeSingle()
         
-        if (!error && data) {
+        if (!error && data?.video_api_key) {
           console.log('[AI Config] Got video config from database:', {
             provider: data.video_provider,
-            hasApiKey: !!data.video_api_key,
+            hasApiKey: true,
             model: data.video_model,
           })
           return {
             provider: data.video_provider || 'doubao',
             apiKey: data.video_api_key || undefined,
-            baseUrl: data.video_base_url || undefined,
-            model: data.video_model || undefined,
+            baseUrl: data.video_base_url || process.env.VIDEO_BASE_URL || undefined,
+            model: data.video_model || process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL,
             resolution: data.video_resolution || undefined,
             ratio: data.video_ratio || undefined,
           }
@@ -414,6 +463,25 @@ export async function getUserVideoConfig(): Promise<{
     }
   } catch (err) {
     console.log('[AI Config] Error getting video config:', err instanceof Error ? err.message : String(err))
+  }
+
+  // 回退到环境变量
+  const envApiKey = process.env.VIDEO_API_KEY
+  const envBaseUrl = process.env.VIDEO_BASE_URL
+  if (envApiKey && envBaseUrl) {
+    console.log('[AI Config] Got video config from environment:', {
+      hasApiKey: true,
+      baseUrl: envBaseUrl,
+      model: process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL,
+    })
+    return {
+      provider: process.env.VIDEO_PROVIDER || 'doubao',
+      apiKey: envApiKey,
+      baseUrl: envBaseUrl,
+      model: process.env.VIDEO_MODEL || DEFAULT_VIDEO_MODEL,
+      resolution: process.env.VIDEO_RESOLUTION || DEFAULT_VIDEO_RESOLUTION,
+      ratio: process.env.VIDEO_RATIO || DEFAULT_VIDEO_RATIO,
+    }
   }
   
   // 返回默认配置
@@ -608,6 +676,8 @@ export async function generateVideoWithVolcengine(params: {
   prompt: string
   firstFrameUrl?: string
   lastFrameUrl?: string
+  /** 多模态参考图，与首尾帧互斥 */
+  referenceImageUrls?: string[]
   resolution?: string
   ratio?: string
   duration?: number
@@ -622,6 +692,7 @@ export async function generateVideoWithVolcengine(params: {
     prompt,
     firstFrameUrl,
     lastFrameUrl,
+    referenceImageUrls,
     resolution = DEFAULT_VIDEO_RESOLUTION,
     ratio = DEFAULT_VIDEO_RATIO,
     duration = 5,
@@ -632,61 +703,92 @@ export async function generateVideoWithVolcengine(params: {
   
   // 辅助函数：将图片 URL 转换为 base64 格式
   async function convertImageToBase64(url: string): Promise<string> {
-    console.log('[Volcengine Video] Downloading image for base64 conversion...')
-    
-    // 检查是否是本地 URL，直接读取文件系统
-    const isLocal = url.startsWith('http://localhost') || 
-                    url.startsWith('https://localhost') ||
-                    url.includes('://127.0.0.1')
-    
-    if (isLocal) {
-      // 从 URL 中提取路径（去掉 http://localhost:5000 前缀）
-      const urlObj = new URL(url)
-      const localPath = urlObj.pathname
-      const fs = await import('fs')
-      const path = await import('path')
-      
-      // 构建完整文件路径
-      const filePath = path.join(process.cwd(), 'public', localPath)
-      console.log(`[Volcengine Video] Reading local file: ${filePath}`)
-      
-      if (fs.existsSync(filePath)) {
-        const buffer = fs.readFileSync(filePath)
-        const base64 = buffer.toString('base64')
-        // 检测图片格式
-        const ext = path.extname(filePath).toLowerCase().replace('.', '')
-        const format = ext === 'jpg' ? 'jpeg' : ext || 'png'
-        console.log(`[Volcengine Video] Local file read successfully, size: ${(buffer.length / 1024).toFixed(2)} KB`)
-        return `data:image/${format};base64,${base64}`
-      } else {
-        console.warn(`[Volcengine Video] Local file not found: ${filePath}, trying HTTP fetch`)
+    console.log('[Volcengine Video] Downloading image for base64 conversion...', {
+      url: url.slice(0, 160),
+    })
+
+    const { extractStorageKeyFromUrl, getObjectBuffer } = await import('@/lib/storage')
+    const fs = await import('fs')
+    const path = await import('path')
+
+    const toDataUrl = (buffer: Buffer, formatHint?: string) => {
+      let format = formatHint || 'png'
+      if (!formatHint) {
+        if (buffer[0] === 0xff && buffer[1] === 0xd8) format = 'jpeg'
+        else if (buffer[0] === 0x89 && buffer[1] === 0x50) format = 'png'
+        else if (buffer[0] === 0x52 && buffer[1] === 0x49) format = 'webp'
+      }
+      if (format === 'jpg') format = 'jpeg'
+      console.log(`[Volcengine Video] Image ready for base64, size: ${(buffer.length / 1024).toFixed(2)} KB, format: ${format}`)
+      return `data:image/${format};base64,${buffer.toString('base64')}`
+    }
+
+    // data URL 直接返回
+    if (url.startsWith('data:image/')) {
+      return url
+    }
+
+    // 1) 相对路径 /api/images?key= 或 storage key → 凭证读 MinIO / 本地
+    const storageKey = extractStorageKeyFromUrl(url)
+    if (storageKey) {
+      const obj = await getObjectBuffer(storageKey)
+      if (obj) {
+        const fmt = obj.contentType?.split('/')[1]
+        return toDataUrl(obj.buffer, fmt)
       }
     }
-    
-    // 非本地 URL 或本地文件不存在，通过 HTTP 请求下载
-    const response = await fetch(url, {
+
+    // 2) /scenes/... /characters/... 或 localhost 绝对路径 → 读 public
+    const tryPublicPaths: string[] = []
+    if (url.startsWith('/')) {
+      tryPublicPaths.push(path.join(process.cwd(), 'public', url.split('?')[0]))
+    }
+    try {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        const urlObj = new URL(url.startsWith('http') ? url : `http://127.0.0.1:5000${url}`)
+        if (
+          urlObj.hostname === 'localhost' ||
+          urlObj.hostname === '127.0.0.1' ||
+          urlObj.hostname === '[::1]'
+        ) {
+          tryPublicPaths.push(path.join(process.cwd(), 'public', urlObj.pathname))
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    for (const filePath of tryPublicPaths) {
+      if (fs.existsSync(filePath)) {
+        console.log(`[Volcengine Video] Reading local file: ${filePath}`)
+        const buffer = fs.readFileSync(filePath)
+        const ext = path.extname(filePath).toLowerCase().replace('.', '')
+        return toDataUrl(buffer, ext || undefined)
+      }
+    }
+
+    // 3) HTTP 拉取（本机 /api/images、公网 URL）
+    let fetchUrl = url
+    if (url.startsWith('/')) {
+      const domain = process.env.COZE_PROJECT_DOMAIN_DEFAULT || 'http://127.0.0.1:5000'
+      fetchUrl = `${domain}${url}`
+    }
+
+    const response = await fetch(fetchUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'image',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'cross-site',
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       },
       redirect: 'follow',
     })
-    
+
     if (!response.ok) {
-      throw new Error(`Failed to download image: ${response.status}`)
+      throw new Error(`Failed to download image: ${response.status} ${fetchUrl.slice(0, 120)}`)
     }
-    const buffer = await response.arrayBuffer()
-    const base64 = Buffer.from(buffer).toString('base64')
-    // 检测图片格式
+    const buffer = Buffer.from(await response.arrayBuffer())
     const contentType = response.headers.get('content-type') || 'image/png'
-    const format = contentType.split('/')[1] || 'png'
-    return `data:image/${format};base64,${base64}`
+    const format = contentType.split('/')[1]?.split(';')[0] || 'png'
+    return toDataUrl(buffer, format)
   }
   
   // 检查 URL 是否是火山引擎 TOS URL（可能无法被视频 API 访问）
@@ -694,35 +796,61 @@ export async function generateVideoWithVolcengine(params: {
     url.includes('ark-content-generation') || 
     url.includes('tos-cn-beijing.volces.com')
   
-  // 检查 URL 是否是本地 URL（外部服务器无法访问）
+  // 检查 URL 是否是本地 / 内网 / 相对路径（外部服务器无法访问）
   const isLocalUrl = (url: string) => 
+    url.startsWith('data:') ||
+    url.startsWith('/') ||
+    url.startsWith('/api/images') ||
+    url.includes('/api/images?') ||
     url.startsWith('http://localhost') || 
     url.startsWith('https://localhost') ||
     url.includes('://127.0.0.1') ||
-    url.includes('://[::1]')
+    url.includes('://[::1]') ||
+    url.includes(':9000/')
   
   // 判断是否需要转换为 base64（TOS URL 或本地 URL）
   const needsBase64Conversion = (url: string) => 
-    isVolcengineTosUrl(url) || isLocalUrl(url)
-  
-  // 转换图片 URL 为可用格式
+    !!url && (url.startsWith('data:') || isVolcengineTosUrl(url) || isLocalUrl(url) || !url.startsWith('http'))
+
+  const resolveUrl = async (url: string): Promise<string> => {
+    if (needsBase64Conversion(url)) {
+      if (url.startsWith('data:image/')) return url
+      return convertImageToBase64(url)
+    }
+    return url
+  }
+
+  const refs = (referenceImageUrls || []).filter(Boolean).slice(0, 9)
+  const useReferenceMode = refs.length > 0
+
+  // 转换图片 URL 为可用格式（首尾帧 / 参考图都要转）
   let processedFirstFrameUrl = firstFrameUrl
   let processedLastFrameUrl = lastFrameUrl
+  let processedRefs: string[] = []
   
   try {
-    if (firstFrameUrl && needsBase64Conversion(firstFrameUrl)) {
-      console.log('[Volcengine Video] Converting first frame to base64...', {
-        isTos: isVolcengineTosUrl(firstFrameUrl),
-        isLocal: isLocalUrl(firstFrameUrl),
-      })
-      processedFirstFrameUrl = await convertImageToBase64(firstFrameUrl)
-    }
-    if (lastFrameUrl && needsBase64Conversion(lastFrameUrl)) {
-      console.log('[Volcengine Video] Converting last frame to base64...', {
-        isTos: isVolcengineTosUrl(lastFrameUrl),
-        isLocal: isLocalUrl(lastFrameUrl),
-      })
-      processedLastFrameUrl = await convertImageToBase64(lastFrameUrl)
+    if (useReferenceMode) {
+      console.log('[Volcengine Video] Converting reference images to base64...', { count: refs.length })
+      processedRefs = []
+      for (let i = 0; i < refs.length; i++) {
+        console.log(`[Volcengine Video] Reference image ${i + 1}/${refs.length}`)
+        processedRefs.push(await resolveUrl(refs[i]))
+      }
+    } else {
+      if (firstFrameUrl && needsBase64Conversion(firstFrameUrl)) {
+        console.log('[Volcengine Video] Converting first frame to base64...', {
+          isTos: isVolcengineTosUrl(firstFrameUrl),
+          isLocal: isLocalUrl(firstFrameUrl),
+        })
+        processedFirstFrameUrl = await convertImageToBase64(firstFrameUrl)
+      }
+      if (lastFrameUrl && needsBase64Conversion(lastFrameUrl)) {
+        console.log('[Volcengine Video] Converting last frame to base64...', {
+          isTos: isVolcengineTosUrl(lastFrameUrl),
+          isLocal: isLocalUrl(lastFrameUrl),
+        })
+        processedLastFrameUrl = await convertImageToBase64(lastFrameUrl)
+      }
     }
   } catch (conversionError) {
     console.warn('[Volcengine Video] Failed to convert images to base64, trying original URLs:', conversionError)
@@ -732,8 +860,16 @@ export async function generateVideoWithVolcengine(params: {
   // 构建内容数组
   const content: VolcengineVideoContent[] = []
   
-  // 添加图片内容
-  if (processedFirstFrameUrl && processedLastFrameUrl) {
+  if (useReferenceMode) {
+    // 多模态参考生视频（与首尾帧互斥）
+    for (const refUrl of processedRefs) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: refUrl },
+        role: 'reference_image',
+      })
+    }
+  } else if (processedFirstFrameUrl && processedLastFrameUrl) {
     // 首尾帧生视频
     content.push({
       type: 'image_url',
@@ -774,8 +910,10 @@ export async function generateVideoWithVolcengine(params: {
   
   console.log('[Volcengine Video] Starting generation:', {
     model,
+    mode: useReferenceMode ? 'reference' : (lastFrameUrl ? 'first-last' : 'first-only'),
     hasFirstFrame: !!firstFrameUrl,
     hasLastFrame: !!lastFrameUrl,
+    referenceCount: processedRefs.length,
     resolution,
     ratio,
     duration,
@@ -853,12 +991,21 @@ export interface LLMProviderConfig {
 async function getLLMProviderConfig(): Promise<LLMProviderConfig> {
   // 从环境变量获取 Provider 类型
   const envProvider = process.env.LLM_PROVIDER as LLMProvider | undefined
-  
-  // 如果明确指定使用 openai-compatible
-  if (envProvider === 'openai-compatible') {
-    const apiKey = process.env.LLM_API_KEY
-    const baseUrl = process.env.LLM_BASE_URL
-    const model = process.env.LLM_MODEL
+  const envApiKey = process.env.LLM_API_KEY
+  const envBaseUrl = process.env.LLM_BASE_URL
+  const envModel = process.env.LLM_MODEL
+  const isVolcengineEnv =
+    !!envBaseUrl &&
+    (envBaseUrl.includes('volces.com') || envBaseUrl.includes('volcengine.com'))
+
+  // 明确指定 openai-compatible，或配置了火山引擎 Base URL + API Key 时走 OpenAI 兼容
+  if (
+    envProvider === 'openai-compatible' ||
+    (isVolcengineEnv && !!envApiKey)
+  ) {
+    const apiKey = envApiKey
+    const baseUrl = envBaseUrl
+    const model = envModel
     
     // 如果环境变量没有配置，尝试从用户设置获取
     if (!apiKey || !baseUrl) {
@@ -874,7 +1021,7 @@ async function getLLMProviderConfig(): Promise<LLMProviderConfig> {
           
           if (!error && data) {
             return {
-              provider: data.llm_provider || 'openai-compatible',
+              provider: 'openai-compatible',
               apiKey: apiKey || data.llm_api_key,
               baseUrl: baseUrl || data.llm_base_url,
               model: model || data.llm_model,
@@ -892,7 +1039,7 @@ async function getLLMProviderConfig(): Promise<LLMProviderConfig> {
         
         if (settings?.llm_api_key) {
           return {
-            provider: (settings.llm_provider as LLMProvider) || 'openai-compatible',
+            provider: 'openai-compatible',
             apiKey: apiKey || (settings.llm_api_key as string),
             baseUrl: baseUrl || (settings.llm_base_url as string),
             model: model || (settings.llm_model as string),
@@ -907,7 +1054,7 @@ async function getLLMProviderConfig(): Promise<LLMProviderConfig> {
       provider: 'openai-compatible',
       apiKey,
       baseUrl,
-      model,
+      model: model || DEFAULT_LLM_MODEL,
     }
   }
   
@@ -2121,10 +2268,359 @@ export function createImageClient(
   return new ImageGenerationClient(clientConfig, headers)
 }
 
+function isLocalOrPrivateImageUrl(url: string): boolean {
+  return (
+    url.startsWith('data:') ||
+    url.startsWith('http://localhost') ||
+    url.startsWith('https://localhost') ||
+    url.includes('://127.0.0.1') ||
+    url.includes('://[::1]') ||
+    url.startsWith('/')
+  )
+}
+
+/**
+ * 将本地/内网参考图转为 data URL，供火山等外部 API 使用。
+ * 外部服务无法访问 127.0.0.1 / localhost / 相对路径。
+ */
+async function resolveImageForExternalApi(url: string): Promise<string | null> {
+  if (url.startsWith('data:')) {
+    return url
+  }
+
+  const tryReadLocalPublic = async (keyOrPath: string): Promise<string | null> => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const normalized = keyOrPath.replace(/^\/+/, '').replace(/\\/g, '/')
+    const publicRoot = path.join(process.cwd(), 'public')
+    const candidates = [
+      path.join(publicRoot, normalized),
+      path.join(publicRoot, 'characters', normalized),
+      path.join(publicRoot, 'scenes', normalized),
+    ]
+    if (normalized.startsWith('characters/')) {
+      candidates.push(path.join(publicRoot, normalized.slice('characters/'.length)))
+    }
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        const buffer = fs.readFileSync(candidate)
+        const ext = path.extname(candidate).toLowerCase().replace('.', '')
+        const format = ext === 'jpg' ? 'jpeg' : ext || 'png'
+        logger.info('Resolved reference image from local public', { candidate, size: buffer.length })
+        return `data:image/${format};base64,${buffer.toString('base64')}`
+      }
+    }
+    return null
+  }
+
+  const bufferToDataUrl = (buffer: Buffer, contentType?: string | null): string => {
+    const mime = contentType && contentType.startsWith('image/')
+      ? contentType
+      : 'image/png'
+    const format = mime.split('/')[1] || 'png'
+    return `data:image/${format};base64,${buffer.toString('base64')}`
+  }
+
+  // 相对路径：直接读 public
+  if (url.startsWith('/')) {
+    const local = await tryReadLocalPublic(url)
+    if (local) return local
+  }
+
+  // 从 URL 提取可能的 storage key，优先读本地兜底文件
+  try {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      const urlObj = new URL(url)
+      const pathname = urlObj.pathname.replace(/^\/+/, '')
+      // 去掉可能的 bucket 前缀
+      const bucket = process.env.S3_BUCKET || 'drama-studio'
+      const key = pathname.startsWith(`${bucket}/`)
+        ? pathname.slice(bucket.length + 1)
+        : pathname
+      const local = await tryReadLocalPublic(key)
+      if (local) return local
+    }
+  } catch {
+    // ignore URL parse errors
+  }
+
+  // 本机 HTTP（MinIO / 本服务）可在服务端下载后再转 base64
+  const candidates: string[] = [url]
+  if (url.includes('://127.0.0.1') || url.includes('localhost')) {
+    try {
+      const { getPublicUrl } = await import('@/lib/storage')
+      const urlObj = new URL(url)
+      const pathname = urlObj.pathname.replace(/^\/+/, '')
+      const bucket = process.env.S3_BUCKET || 'drama-studio'
+      const key = pathname.startsWith(`${bucket}/`)
+        ? pathname.slice(bucket.length + 1)
+        : pathname
+      // scene-image 常漏掉 bucket，补一条正确 MinIO 路径
+      candidates.push(getPublicUrl(key))
+      candidates.push(`http://127.0.0.1:5000/api/images?key=${encodeURIComponent(key)}`)
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate, { redirect: 'follow' })
+      if (!response.ok) continue
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (buffer.length < 100) continue
+      logger.info('Resolved reference image via HTTP', {
+        candidate: candidate.slice(0, 120),
+        size: buffer.length,
+      })
+      return bufferToDataUrl(buffer, response.headers.get('content-type'))
+    } catch {
+      // try next
+    }
+  }
+
+  logger.warn('Failed to resolve reference image for external API', { url: url.slice(0, 160) })
+  return null
+}
+
 /**
  * 使用 OpenAI 兼容格式生成图像
  * 支持火山引擎、阿里云等 OpenAI 兼容的图像生成 API
  */
+/** 将火山风格尺寸（1K/2K/4K）映射为 OpenAI 图像接口常用像素尺寸 */
+function normalizeOpenAICompatibleImageSize(size: string, baseUrl: string): string {
+  const isVolc =
+    baseUrl.includes('volces.com') ||
+    baseUrl.includes('volcengine') ||
+    baseUrl.includes('doubao')
+  if (isVolc) return size
+
+  const map: Record<string, string> = {
+    '1K': '1024x1024',
+    '2K': '1024x1024',
+    '4K': '1536x1024',
+  }
+  return map[size] || size
+}
+
+/** Gemini 原生生图模型（Nano Banana 等）不能走 /images/generations，需用 chat/completions */
+function isGeminiImageModel(model: string): boolean {
+  const m = model.toLowerCase()
+  return m.includes('gemini') && (m.includes('image') || m.includes('nano-banana') || m.includes('banana'))
+}
+
+/** Gemini 生图用 1K/2K/4K；像素尺寸则回落到 2K */
+function normalizeGeminiImageSize(size: string): string {
+  if (size === '1K' || size === '2K' || size === '4K') return size
+  if (size.includes('1536') || size.includes('2048')) return '2K'
+  if (size.includes('1024')) return '1K'
+  return '2K'
+}
+
+function extractB64FromDataUrl(value: string): string | null {
+  const match = value.match(/^data:image\/[^;]+;base64,(.+)$/i)
+  return match?.[1] || null
+}
+
+function collectImagesFromChatCompletion(data: unknown): { urls: string[]; b64List: string[] } {
+  const urls: string[] = []
+  const b64List: string[] = []
+
+  const pushUrlOrB64 = (value: string) => {
+    if (!value || typeof value !== 'string') return
+    if (value.startsWith('data:image/')) {
+      const b64 = extractB64FromDataUrl(value)
+      if (b64) {
+        b64List.push(b64)
+        urls.push(value)
+      }
+    } else if (value.startsWith('http://') || value.startsWith('https://')) {
+      urls.push(value)
+    } else if (/^[A-Za-z0-9+/=\s]+$/.test(value) && value.replace(/\s/g, '').length > 200) {
+      const cleaned = value.replace(/\s/g, '')
+      b64List.push(cleaned)
+      urls.push(`data:image/png;base64,${cleaned}`)
+    }
+  }
+
+  const walk = (node: unknown) => {
+    if (!node) return
+    if (typeof node === 'string') {
+      const mdMatch = node.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+/i)
+      if (mdMatch) pushUrlOrB64(mdMatch[0].replace(/\s/g, ''))
+      return
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+      return
+    }
+    if (typeof node !== 'object') return
+
+    const obj = node as Record<string, unknown>
+    if (typeof obj.url === 'string') pushUrlOrB64(obj.url)
+    if (typeof obj.b64_json === 'string') pushUrlOrB64(obj.b64_json)
+    if (obj.image_url && typeof obj.image_url === 'object') {
+      const imageUrl = (obj.image_url as Record<string, unknown>).url
+      if (typeof imageUrl === 'string') pushUrlOrB64(imageUrl)
+    }
+    if (typeof obj.inline_data === 'object' && obj.inline_data) {
+      const inline = obj.inline_data as Record<string, unknown>
+      if (typeof inline.data === 'string') pushUrlOrB64(inline.data)
+    }
+    if (typeof obj.inlineData === 'object' && obj.inlineData) {
+      const inline = obj.inlineData as Record<string, unknown>
+      if (typeof inline.data === 'string') pushUrlOrB64(inline.data)
+    }
+
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === 'object') walk(value)
+      else if (typeof value === 'string' && value.includes('data:image/')) walk(value)
+    }
+  }
+
+  walk(data)
+  return { urls, b64List }
+}
+
+/**
+ * Gemini 图像模型：通过 OpenAI 兼容 chat/completions + modalities 生图
+ * QuickRouter / NewAPI 对 gemini-*-image 不支持 /images/generations
+ */
+async function generateImageWithGeminiChatCompletions(params: {
+  prompt: string
+  apiKey: string
+  baseUrl: string
+  model: string
+  size?: string
+  image?: string | string[]
+}): Promise<{ urls: string[]; b64List?: string[] }> {
+  const { prompt, apiKey, baseUrl, model, size = '2K', image } = params
+  const imageSize = normalizeGeminiImageSize(size)
+
+  const contentParts: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }]
+
+  if (image) {
+    const imageUrls = Array.isArray(image) ? image : [image]
+    for (const imageUrl of imageUrls) {
+      let resolved = imageUrl
+      if (
+        isLocalOrPrivateImageUrl(imageUrl) ||
+        imageUrl.includes('127.0.0.1') ||
+        imageUrl.includes('localhost')
+      ) {
+        const dataUrl = await resolveImageForExternalApi(imageUrl)
+        if (!dataUrl) {
+          logger.warn('Skipping unreachable local reference image for Gemini', {
+            url: imageUrl.slice(0, 120),
+          })
+          continue
+        }
+        resolved = dataUrl
+      }
+      contentParts.push({
+        type: 'image_url',
+        image_url: { url: resolved },
+      })
+    }
+  }
+
+  const requestBody: Record<string, unknown> = {
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: contentParts.length === 1 ? prompt : contentParts,
+      },
+    ],
+    modalities: ['text', 'image'],
+    image_config: {
+      aspect_ratio: '1:1',
+      image_size: imageSize,
+    },
+  }
+
+  logger.info('Calling Gemini image via chat/completions', {
+    baseUrl,
+    model,
+    imageSize,
+    hasImage: !!image,
+  })
+
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    logger.error('Gemini chat image API error', {
+      status: response.status,
+      error: errorText.slice(0, 500),
+    })
+    throw new Error(`图像生成 API 错误 (${response.status}): ${errorText.slice(0, 200)}`)
+  }
+
+  const data = await response.json()
+  const { urls, b64List } = collectImagesFromChatCompletion(data)
+
+  if (urls.length === 0 && b64List.length === 0) {
+    logger.warn('Gemini chat image API returned no images', {
+      response: JSON.stringify(data).slice(0, 800),
+    })
+    throw new Error('图像生成 API 未返回有效图片（Gemini 需走 chat/completions）')
+  }
+
+  logger.info('Gemini chat image generation completed', {
+    urlCount: urls.length,
+    b64Count: b64List.length,
+  })
+
+  return {
+    urls,
+    b64List: b64List.length > 0 ? b64List : undefined,
+  }
+}
+
+async function imageSourceToFormFile(source: string): Promise<{ blob: Blob; filename: string }> {
+  if (source.startsWith('data:')) {
+    const match = source.match(/^data:([^;]+);base64,(.+)$/i)
+    if (!match) {
+      throw new Error('Invalid image data URL for edits')
+    }
+    const mime = match[1] || 'image/png'
+    const buffer = Buffer.from(match[2], 'base64')
+    const ext = mime.includes('jpeg') || mime.includes('jpg')
+      ? 'jpg'
+      : mime.includes('webp')
+        ? 'webp'
+        : 'png'
+    return {
+      blob: new Blob([buffer], { type: mime }),
+      filename: `reference.${ext}`,
+    }
+  }
+
+  const response = await fetch(source)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch reference image (${response.status})`)
+  }
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const mime = response.headers.get('content-type') || 'image/png'
+  const ext = mime.includes('jpeg') || mime.includes('jpg')
+    ? 'jpg'
+    : mime.includes('webp')
+      ? 'webp'
+      : 'png'
+  return {
+    blob: new Blob([buffer], { type: mime.split(';')[0] }),
+    filename: `reference.${ext}`,
+  }
+}
+
 async function generateImageWithOpenAICompatible(params: {
   prompt: string
   apiKey: string
@@ -2133,86 +2629,169 @@ async function generateImageWithOpenAICompatible(params: {
   size?: string
   watermark?: boolean
   image?: string | string[]
+  responseFormat?: 'url' | 'b64_json'
 }): Promise<{ urls: string[]; b64List?: string[] }> {
-  const { prompt, apiKey, baseUrl, model, size = '2K', watermark = false, image } = params
-  
-  // 构建请求体
-  // 火山引擎支持 size 参数为分辨率（1K/2K/4K）或像素尺寸（2048x2048）
-  const requestBody: Record<string, unknown> = {
-    model,
+  const {
     prompt,
-    size,  // 直接传递分辨率字符串，如 "2K"
-    response_format: 'url',
+    apiKey,
+    baseUrl,
+    model,
+    size = '2K',
+    watermark = false,
+    image,
+    responseFormat = 'url',
+  } = params
+
+  // Gemini Nano Banana 等：不能用 /images/generations
+  if (isGeminiImageModel(model)) {
+    return generateImageWithGeminiChatCompletions({
+      prompt,
+      apiKey,
+      baseUrl,
+      model,
+      size,
+      image,
+    })
   }
-  
-  // 火山引擎等 Provider 支持额外参数
-  // 参考：https://www.volcengine.com/docs/82379/1541523
-  // 火山引擎 URL 格式: https://ark.cn-beijing.volces.com/api/v3
-  if (baseUrl.includes('volces.com') || baseUrl.includes('volcengine') || baseUrl.includes('doubao')) {
-    requestBody.watermark = watermark
-  }
-  
-  // 图生图：传入参考图片
+
+  const isVolc =
+    baseUrl.includes('volces.com') ||
+    baseUrl.includes('volcengine') ||
+    baseUrl.includes('doubao')
+  const resolvedSize = normalizeOpenAICompatibleImageSize(size, baseUrl)
+
+  // 解析参考图（本地 URL → data URI / base64）
+  let resolvedImages: string[] = []
   if (image) {
     const imageUrls = Array.isArray(image) ? image : [image]
-    if (imageUrls.length === 1) {
-      requestBody.image = imageUrls[0]
-    } else {
-      // 多张参考图片（多人物融合）
-      requestBody.image = imageUrls
+    for (const imageUrl of imageUrls) {
+      if (
+        isLocalOrPrivateImageUrl(imageUrl) ||
+        imageUrl.includes('127.0.0.1') ||
+        imageUrl.includes('localhost')
+      ) {
+        const dataUrl = await resolveImageForExternalApi(imageUrl)
+        if (dataUrl) {
+          resolvedImages.push(dataUrl)
+        } else {
+          logger.warn('Skipping unreachable local reference image', {
+            url: imageUrl.slice(0, 120),
+          })
+        }
+      } else {
+        resolvedImages.push(imageUrl)
+      }
     }
   }
-  
-  logger.info('Calling OpenAI-compatible image API', { 
-    baseUrl, 
-    model, 
-    size,
-    hasImage: !!image 
+
+  // OpenAI / QuickRouter gpt-image-*：
+  // - 文生图 → /images/generations（不能带 image）
+  // - /images/edits 是单图编辑，不适合分镜「多角色参考图保持一致性」
+  // 火山 Seedream：generations 支持 image 字段
+  // 因此非火山有参考图时：忽略参考图，走纯文生图（提示词里已有角色外观描述）
+  const useEditsEndpoint = false
+  if (!isVolc && resolvedImages.length > 0) {
+    logger.warn(
+      'Skipping reference images for OpenAI-compatible image model; use text-to-image only',
+      { model, refCount: resolvedImages.length }
+    )
+    resolvedImages = []
+  }
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/images/generations`
+
+  logger.info('Calling OpenAI-compatible image API', {
+    baseUrl,
+    model,
+    size: resolvedSize,
+    endpoint: 'images/generations',
+    hasImage: resolvedImages.length > 0,
   })
-  
-  const response = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  })
-  
+
+  let response: Response
+
+  if (useEditsEndpoint) {
+    const form = new FormData()
+    form.append('model', model)
+    form.append('prompt', prompt)
+    form.append('size', resolvedSize)
+    form.append('n', '1')
+    for (let i = 0; i < resolvedImages.length; i++) {
+      const { blob, filename } = await imageSourceToFormFile(resolvedImages[i])
+      const name = resolvedImages.length > 1 ? `reference_${i + 1}.${filename.split('.').pop()}` : filename
+      form.append('image', blob, name)
+    }
+
+    response = await fetch(`${baseUrl.replace(/\/$/, '')}/images/edits`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: form,
+    })
+  } else {
+    const requestBody: Record<string, unknown> = {
+      model,
+      prompt,
+      size: resolvedSize,
+      response_format: responseFormat === 'b64_json' ? 'b64_json' : 'url',
+    }
+
+    if (isVolc) {
+      requestBody.watermark = watermark
+      if (resolvedImages.length === 1) {
+        requestBody.image = resolvedImages[0]
+      } else if (resolvedImages.length > 1) {
+        requestBody.image = resolvedImages
+      }
+    }
+
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    })
+  }
+
   if (!response.ok) {
     const errorText = await response.text()
-    logger.error('OpenAI-compatible image API error', { 
-      status: response.status, 
-      error: errorText.slice(0, 500) 
+    logger.error('OpenAI-compatible image API error', {
+      status: response.status,
+      error: errorText.slice(0, 500),
     })
     throw new Error(`图像生成 API 错误 (${response.status}): ${errorText.slice(0, 200)}`)
   }
-  
+
   const data = await response.json()
-  
-  // 提取图片 URL
+
   const urls: string[] = []
   const b64List: string[] = []
-  
+
   if (data.data && Array.isArray(data.data)) {
     for (const item of data.data) {
       if (item.url) {
         urls.push(item.url)
       } else if (item.b64_json) {
         b64List.push(item.b64_json)
-        // 如果返回的是 base64，可以转换为临时 URL
-        // 但这里直接返回 b64，让调用方处理
+        urls.push(`data:image/png;base64,${item.b64_json}`)
       }
     }
   }
-  
+
   if (urls.length === 0 && b64List.length === 0) {
-    logger.warn('OpenAI-compatible API returned no images', { response: JSON.stringify(data).slice(0, 500) })
+    logger.warn('OpenAI-compatible API returned no images', {
+      response: JSON.stringify(data).slice(0, 500),
+    })
     throw new Error('图像生成 API 未返回有效图片')
   }
-  
-  logger.info('OpenAI-compatible image generation completed', { urlCount: urls.length, b64Count: b64List.length })
-  
+
+  logger.info('OpenAI-compatible image generation completed', {
+    urlCount: urls.length,
+    b64Count: b64List.length,
+  })
+
   return {
     urls,
     b64List: b64List.length > 0 ? b64List : undefined,
@@ -2267,19 +2846,21 @@ export async function generateImage(
           size: options?.size || imageConfig.size || DEFAULT_IMAGE_SIZE,
           watermark: options?.watermark ?? false,
           image: options?.image,
+          responseFormat: options?.responseFormat === 'b64_json' ? 'b64_json' : 'url',
         })
         
-        if (result.urls.length > 0) {
+        if (result.urls.length > 0 || (result.b64List && result.b64List.length > 0)) {
           logger.info('Image generation completed with custom provider', { 
             provider: imageConfig.provider,
-            count: result.urls.length 
+            count: result.urls.length || result.b64List?.length || 0
           })
           return result
         }
       } catch (customErr) {
         const errMsg = customErr instanceof Error ? customErr.message : String(customErr)
         logger.warn('Custom provider failed for image generation:', { error: errMsg })
-        // 自定义 Provider 失败，继续尝试其他方式
+        // 已配置火山等自定义 Provider 时，直接抛出真实错误，避免误导为 Coze 配置问题
+        throw new Error(`图像生成失败: ${errMsg}`)
       }
     }
     
@@ -2751,7 +3332,16 @@ export async function generateVideoFromImage(
       } catch (customErr) {
         const errMsg = customErr instanceof Error ? customErr.message : String(customErr)
         logger.warn('Custom provider failed for video generation:', { error: errMsg })
-        // 自定义 Provider 失败，继续尝试其他方式
+        if (
+          errMsg.includes('NotFound') ||
+          errMsg.includes('do not have access') ||
+          errMsg.includes('InvalidEndpointOrModel') ||
+          errMsg.includes('创建视频任务失败')
+        ) {
+          throw new Error(
+            `火山视频生成失败: ${errMsg}。请确认已在火山方舟「开通」Seedance，且 VIDEO_MODEL 与控制台模型 ID 一致。`
+          )
+        }
       }
     }
 
@@ -2935,7 +3525,18 @@ export async function generateVideoFromFrames(
       } catch (customErr) {
         const errMsg = customErr instanceof Error ? customErr.message : String(customErr)
         logger.warn('Custom provider failed for frame-to-video:', { error: errMsg })
-        // 自定义 Provider 失败，继续尝试其他方式
+        // 已明确配置火山等自定义 Provider 时，直接抛出真实错误，避免被 Coze 兜底提示掩盖
+        if (
+          errMsg.includes('NotFound') ||
+          errMsg.includes('do not have access') ||
+          errMsg.includes('InvalidEndpointOrModel') ||
+          errMsg.includes('创建视频任务失败')
+        ) {
+          throw new Error(
+            `火山视频生成失败: ${errMsg}。请确认已在火山方舟「开通」Seedance，且 VIDEO_MODEL 与控制台模型 ID 一致。`
+          )
+        }
+        // 其他错误再尝试 Coze 等回退
       }
     }
 
@@ -3055,6 +3656,62 @@ export async function generateVideoFromFrames(
   } catch (err) {
     logger.error('Frame-to-video generation failed', err)
 
+    if (err instanceof APIError) {
+      throw err
+    }
+    throw Errors.AIRequestFailed('Video', err instanceof Error ? err.message : undefined)
+  }
+}
+
+/**
+ * 多模态参考图生视频（Seedance 2.0 / Mini）
+ * 传入 4-6 张分解图作为 reference_image，与首尾帧模式互斥
+ */
+export async function generateVideoFromReferenceImages(
+  prompt: string,
+  referenceImageUrls: string[],
+  options?: VideoGenerationOptions,
+  _config?: AIServiceConfig,
+  _headers?: Record<string, string>
+): Promise<{ videoUrl: string; lastFrameUrl?: string }> {
+  const refs = (referenceImageUrls || []).filter(Boolean)
+  if (refs.length < 1) {
+    throw new Error('多模态参考模式至少需要 1 张参考图（可为动作分解拼图）')
+  }
+  if (refs.length > 9) {
+    throw new Error('多模态参考图最多 9 张')
+  }
+
+  try {
+    logger.info('Reference-to-video generation started', { count: refs.length })
+
+    const videoConfig = await getUserVideoConfig()
+    const isCustomProvider = videoConfig.apiKey && videoConfig.baseUrl &&
+      !videoConfig.baseUrl.includes('api.coze.cn') &&
+      !videoConfig.baseUrl.includes('api.coze.com')
+
+    if (!isCustomProvider) {
+      throw new Error('多模态参考模式需要配置火山方舟视频 API（VIDEO_API_KEY / VIDEO_BASE_URL）')
+    }
+
+    const result = await generateVideoWithVolcengine({
+      apiKey: videoConfig.apiKey!,
+      baseUrl: videoConfig.baseUrl!,
+      model: videoConfig.model || options?.model || DEFAULT_VIDEO_MODEL,
+      prompt,
+      referenceImageUrls: refs.slice(0, 9),
+      resolution: options?.resolution || videoConfig.resolution || DEFAULT_VIDEO_RESOLUTION,
+      ratio: options?.ratio || videoConfig.ratio || DEFAULT_VIDEO_RATIO,
+      duration: options?.duration ?? 5,
+      watermark: options?.watermark ?? false,
+      generateAudio: options?.generateAudio ?? true,
+      returnLastFrame: true,
+    })
+
+    logger.info('Reference-to-video generation completed')
+    return result
+  } catch (err) {
+    logger.error('Reference-to-video generation failed', err)
     if (err instanceof APIError) {
       throw err
     }

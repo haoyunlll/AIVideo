@@ -7,6 +7,7 @@ import { HeaderUtils, S3Storage } from "coze-coding-dev-sdk"
 import { generateImageFromImage } from "@/lib/ai"
 import { downloadFile } from "@/lib/utils"
 import { getSupabaseClient, isDatabaseConfigured } from "@/storage/database/supabase-client"
+import { CHARACTER_PORTRAIT_STYLE_PROMPT } from "@/lib/styles"
 
 // POST /api/generate/appearance-from-text - 根据旧形象和文字描述生成新形象（图生图）
 export async function POST(request: NextRequest) {
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
       // 如果没有参考图片，回退到文生图
       const name = characterName || '角色'
       const change = changeDescription
-      const basePrompt = `${name}的角色形象图：${change}，高质量，细节丰富`
+      const basePrompt = `${name}的角色形象图：${change}，${CHARACTER_PORTRAIT_STYLE_PROMPT}，细节丰富`
       console.log('[Generate Appearance from Text] Falling back to text-to-image with prompt:', basePrompt.substring(0, 100))
 
       const { generateImage } = await import('@/lib/ai')
@@ -130,7 +131,7 @@ export async function POST(request: NextRequest) {
         // 转换失败，回退到文生图
         const name = characterName || '角色'
         const change = changeDescription
-        const basePrompt = `${name}的角色形象图：${change}，高质量，细节丰富`
+        const basePrompt = `${name}的角色形象图：${change}，${CHARACTER_PORTRAIT_STYLE_PROMPT}，细节丰富`
 
         const { generateImage } = await import('@/lib/ai')
         const result = await generateImage(basePrompt, {
@@ -156,7 +157,7 @@ export async function POST(request: NextRequest) {
 
     // 提示词：参考图片已包含原始形象，这里只描述目标变更
     // 避免混入原始外貌描述导致 AI 困惑，确保 AI 基于参考图做定向修改
-    const basePrompt = `请根据参考图片，将人物${name}的形象改变为：${change}。必须保持人物面部特征与参考图一致，不要改变五官和脸型。更换服装、发型、姿态和整体气质以匹配新的形象描述。高质量，细节丰富。`
+    const basePrompt = `请根据参考图片，将人物${name}的形象改变为：${change}。必须保持人物面部特征与参考图一致，不要改变五官和脸型。更换服装、发型、姿态和整体气质以匹配新的形象描述。输出为${CHARACTER_PORTRAIT_STYLE_PROMPT}，细节丰富。`
 
     console.log('[Generate Appearance from Text] Generating new appearance with prompt:', basePrompt.substring(0, 100))
     console.log('[Generate Appearance from Text] Using reference image:', refImageUrl)
