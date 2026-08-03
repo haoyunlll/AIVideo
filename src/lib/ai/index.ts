@@ -498,10 +498,17 @@ const DEFAULT_VIDEO_RATIO = '16:9'
  * 火山引擎视频生成 API 内容类型
  */
 interface VolcengineVideoContent {
-  type: 'text' | 'image_url' | 'draft_task'
+  type: 'text' | 'image_url' | 'video_url' | 'audio_url' | 'draft_task'
   text?: string
   image_url?: { url: string }
-  role?: 'first_frame' | 'last_frame' | 'reference_image'
+  video_url?: { url: string }
+  audio_url?: { url: string }
+  role?:
+    | 'first_frame'
+    | 'last_frame'
+    | 'reference_image'
+    | 'reference_video'
+    | 'reference_audio'
   draft_task?: { id: string }
 }
 
@@ -678,6 +685,8 @@ export async function generateVideoWithVolcengine(params: {
   lastFrameUrl?: string
   /** 多模态参考图，与首尾帧互斥 */
   referenceImageUrls?: string[]
+  /** 多模态参考视频（Seedance 2.0），最多 3 段 */
+  referenceVideoUrls?: string[]
   resolution?: string
   ratio?: string
   duration?: number
@@ -693,6 +702,7 @@ export async function generateVideoWithVolcengine(params: {
     firstFrameUrl,
     lastFrameUrl,
     referenceImageUrls,
+    referenceVideoUrls,
     resolution = DEFAULT_VIDEO_RESOLUTION,
     ratio = DEFAULT_VIDEO_RATIO,
     duration = 5,
@@ -821,20 +831,41 @@ export async function generateVideoWithVolcengine(params: {
   }
 
   const refs = (referenceImageUrls || []).filter(Boolean).slice(0, 9)
-  const useReferenceMode = refs.length > 0
+  const videoRefs = (referenceVideoUrls || []).filter(Boolean).slice(0, 3)
+  const useReferenceMode = refs.length > 0 || videoRefs.length > 0
 
   // 转换图片 URL 为可用格式（首尾帧 / 参考图都要转）
   let processedFirstFrameUrl = firstFrameUrl
   let processedLastFrameUrl = lastFrameUrl
   let processedRefs: string[] = []
+  let processedVideoRefs: string[] = []
   
   try {
     if (useReferenceMode) {
-      console.log('[Volcengine Video] Converting reference images to base64...', { count: refs.length })
-      processedRefs = []
-      for (let i = 0; i < refs.length; i++) {
-        console.log(`[Volcengine Video] Reference image ${i + 1}/${refs.length}`)
-        processedRefs.push(await resolveUrl(refs[i]))
+      if (refs.length > 0) {
+        console.log('[Volcengine Video] Converting reference images to base64...', { count: refs.length })
+        processedRefs = []
+        for (let i = 0; i < refs.length; i++) {
+          console.log(`[Volcengine Video] Reference image ${i + 1}/${refs.length}`)
+          processedRefs.push(await resolveUrl(refs[i]))
+        }
+      }
+      // 参考视频：Seedance 强制要求公网 http(s) URL，拒绝 data URI / 本机地址
+      processedVideoRefs = []
+      for (let i = 0; i < videoRefs.length; i++) {
+        const v = videoRefs[i]
+        const isPublicHttp =
+          /^https?:\/\//i.test(v) &&
+          !/\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(v)
+        if (!isPublicHttp) {
+          console.warn(
+            '[Volcengine Video] skip reference_video (must be public web url):',
+            v.slice(0, 80)
+          )
+          continue
+        }
+        processedVideoRefs.push(v)
+        console.log(`[Volcengine Video] Reference video ${i + 1}/${videoRefs.length}`)
       }
     } else {
       if (firstFrameUrl && needsBase64Conversion(firstFrameUrl)) {
@@ -861,12 +892,19 @@ export async function generateVideoWithVolcengine(params: {
   const content: VolcengineVideoContent[] = []
   
   if (useReferenceMode) {
-    // 多模态参考生视频（与首尾帧互斥）
+    // 多模态参考生视频（与首尾帧互斥）：图 + 视频
     for (const refUrl of processedRefs) {
       content.push({
         type: 'image_url',
         image_url: { url: refUrl },
         role: 'reference_image',
+      })
+    }
+    for (const videoUrl of processedVideoRefs) {
+      content.push({
+        type: 'video_url',
+        video_url: { url: videoUrl },
+        role: 'reference_video',
       })
     }
   } else if (processedFirstFrameUrl && processedLastFrameUrl) {
@@ -914,6 +952,7 @@ export async function generateVideoWithVolcengine(params: {
     hasFirstFrame: !!firstFrameUrl,
     hasLastFrame: !!lastFrameUrl,
     referenceCount: processedRefs.length,
+    referenceVideoCount: processedVideoRefs.length,
     resolution,
     ratio,
     duration,
@@ -3664,26 +3703,30 @@ export async function generateVideoFromFrames(
 }
 
 /**
- * 多模态参考图生视频（Seedance 2.0 / Mini）
- * 传入 4-6 张分解图作为 reference_image，与首尾帧模式互斥
+ * 多模态参考图/视频生视频（Seedance 2.0 / Mini）
+ * 传入分解拼图等 reference_image，可选上一镜末尾参考视频；与首尾帧模式互斥
  */
 export async function generateVideoFromReferenceImages(
   prompt: string,
   referenceImageUrls: string[],
-  options?: VideoGenerationOptions,
+  options?: VideoGenerationOptions & { referenceVideoUrls?: string[] },
   _config?: AIServiceConfig,
   _headers?: Record<string, string>
 ): Promise<{ videoUrl: string; lastFrameUrl?: string }> {
   const refs = (referenceImageUrls || []).filter(Boolean)
-  if (refs.length < 1) {
-    throw new Error('多模态参考模式至少需要 1 张参考图（可为动作分解拼图）')
+  const videoRefs = (options?.referenceVideoUrls || []).filter(Boolean).slice(0, 3)
+  if (refs.length < 1 && videoRefs.length < 1) {
+    throw new Error('多模态参考模式至少需要 1 张参考图或 1 段参考视频')
   }
   if (refs.length > 9) {
     throw new Error('多模态参考图最多 9 张')
   }
 
   try {
-    logger.info('Reference-to-video generation started', { count: refs.length })
+    logger.info('Reference-to-video generation started', {
+      images: refs.length,
+      videos: videoRefs.length,
+    })
 
     const videoConfig = await getUserVideoConfig()
     const isCustomProvider = videoConfig.apiKey && videoConfig.baseUrl &&
@@ -3700,6 +3743,7 @@ export async function generateVideoFromReferenceImages(
       model: videoConfig.model || options?.model || DEFAULT_VIDEO_MODEL,
       prompt,
       referenceImageUrls: refs.slice(0, 9),
+      referenceVideoUrls: videoRefs,
       resolution: options?.resolution || videoConfig.resolution || DEFAULT_VIDEO_RESOLUTION,
       ratio: options?.ratio || videoConfig.ratio || DEFAULT_VIDEO_RATIO,
       duration: options?.duration ?? 5,

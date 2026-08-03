@@ -9,6 +9,10 @@ import { memoryScenes, memoryProjects, memoryCharacters } from '@/lib/memory-sto
 import { getVideoStylePrompt } from '@/lib/styles'
 import { uploadFile, extractStorageKeyFromUrl } from '@/lib/storage'
 import { readStateFromMetadata } from '@/lib/scene-continuity'
+import {
+  createPreviousSceneTailClip,
+  CONTINUITY_TAIL_SECONDS,
+} from '@/lib/video-tail-clip'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -80,7 +84,7 @@ async function resolveCharacterAppearanceRefs(sceneId: string): Promise<
   return results
 }
 
-/** 上一镜完整上下文：整段剧情文案 + 身体状态 + 分解拼图 */
+/** 上一镜完整上下文：整段剧情文案 + 身体状态 + 分解拼图 + 成片 */
 type PreviousSceneContext = {
   sceneNumber: number
   title?: string
@@ -92,6 +96,7 @@ type PreviousSceneContext = {
   endState?: string
   continuity?: string
   sheetUrl?: string
+  videoUrl?: string
 }
 
 /** 查找上一镜：整段剧情 + 可选分解拼图（metadata.referenceSheetUrl） */
@@ -150,6 +155,7 @@ async function resolvePreviousSceneContext(
       sheetUrl:
         previousSheetUrlHint ||
         (typeof memUrl === 'string' && memUrl ? memUrl : undefined),
+      videoUrl: memPrev.videoUrl || undefined,
     }
   }
 
@@ -157,7 +163,7 @@ async function resolvePreviousSceneContext(
     const { data: prev } = await getSupabaseClient()
       .from('scenes')
       .select(
-        'id, scene_number, title, description, action, dialogue, emotion, metadata'
+        'id, scene_number, title, description, action, dialogue, emotion, metadata, video_url'
       )
       .eq('project_id', projectId)
       .eq('scene_number', prevNumber)
@@ -179,6 +185,7 @@ async function resolvePreviousSceneContext(
         sheetUrl:
           previousSheetUrlHint ||
           (typeof metaUrl === 'string' && metaUrl ? metaUrl : undefined),
+        videoUrl: prev.video_url || undefined,
       }
     }
   }
@@ -283,13 +290,14 @@ export async function POST(request: NextRequest) {
       sceneId,
       projectId,
       referenceImages,
-      duration = 6,
+      duration = 5,
       ratio = '16:9',
       dialogue,
       action,
       emotion,
       mode = 'frames', // 'frames' = 多张关键帧；'sheet' = 一张多分格拼图
       previousSheetUrl, // 上一镜分解拼图（可选；服务端也会自动查找）
+      previousVideoUrl, // 上一镜成片（可选；服务端也会自动查找并裁末尾）
       persistSheetOnly = false, // 仅保存拼图到分镜，不生成视频
     } = body as {
       sceneId?: string
@@ -302,6 +310,7 @@ export async function POST(request: NextRequest) {
       emotion?: string
       mode?: 'frames' | 'sheet'
       previousSheetUrl?: string
+      previousVideoUrl?: string
       persistSheetOnly?: boolean
     }
 
@@ -415,12 +424,36 @@ export async function POST(request: NextRequest) {
       await persistCurrentSheetToScene(sceneId, persisted[0])
     }
 
-    // 上一镜整段剧情 + 整张拼图：叙事因果承接，不只锁末格
+    // 上一镜整段剧情 + 整张拼图 + 成片末尾参考视频
     const previousScene = await resolvePreviousSceneContext(
       sceneId,
       projectId,
       previousSheetUrl
     )
+    if (previousScene && previousVideoUrl && !previousScene.videoUrl) {
+      previousScene.videoUrl = previousVideoUrl
+    }
+
+    // 裁切上一镜成片末尾约 2 秒作为 Seedance 参考视频（动作衔接优先）
+    let continuityTailUrl: string | undefined
+    let continuityTailSeconds = 0
+    const prevVideoSource = previousScene?.videoUrl || previousVideoUrl
+    if (prevVideoSource) {
+      const tail = await createPreviousSceneTailClip(
+        prevVideoSource,
+        sceneId,
+        CONTINUITY_TAIL_SECONDS
+      )
+      if (tail?.url) {
+        continuityTailUrl = tail.url
+        continuityTailSeconds = tail.seconds
+        console.log('[Video Reference] continuity tail ready:', {
+          seconds: tail.seconds,
+          sourceDuration: tail.sourceDuration,
+          urlPreview: tail.url.slice(0, 80),
+        })
+      }
+    }
 
     // 角色形象参考：拼图只管剧情，成片人物长相以人物设定图为准
     const characterRefs = await resolveCharacterAppearanceRefs(sceneId)
@@ -474,21 +507,26 @@ export async function POST(request: NextRequest) {
               ? prevPlotLines.join('；')
               : '见上一镜分解拼图时间线'
           }`,
+          continuityTailUrl
+            ? `参考视频 video1 是${prevLabel}成片的最后约 ${continuityTailSeconds || CONTINUITY_TAIL_SECONDS} 秒：本段开场必须无缝衔接该视频结尾的姿态、握姿、朝向、运动惯性与空间位置，禁止硬切跳变或重演整段旧戏`
+            : '',
           prevSheetImageIndex > 0
-            ? `参考图 image${prevSheetImageIndex} 是${prevLabel}的完整动作分解拼图，代表上一镜整段剧情的视觉时间线（从左到右、从上到下，每格约 1 秒）`
-            : `${prevLabel}暂无拼图，请仅依据上文剧情与状态文案做叙事承接`,
+            ? `参考图 image${prevSheetImageIndex} 是${prevLabel}的完整动作分解拼图，代表上一镜整段剧情的视觉时间线（从左到右、从上到下，每格约 1 秒）；有参考视频时以视频末尾动作为开场第一优先`
+            : !continuityTailUrl
+              ? `${prevLabel}暂无成片与拼图，请仅依据上文剧情与状态文案做叙事承接`
+              : '',
           '请先完整理解上一镜：起因→发展→收束，人物动机、空间关系、道具状态、情绪弧线如何走到现在',
           previousScene.endState
             ? `硬约束：本段开场身体与持物状态必须等于上一镜 endState「${previousScene.endState}」（握姿/出鞘进度/站姿或冲刺/朝向不得擅自改成正握、站定等另一种状态）`
             : '硬约束：本段开场必须继承上一镜收束后的整体结果，禁止无因换姿换握',
           currentState.startState
-            ? `本镜开场状态 startState「${currentState.startState}」必须与上一镜 endState 一致；若文案冲突以可核对的物理细节为准并保持连续`
+            ? `本镜开场状态 startState「${currentState.startState}」必须与上一镜 endState 一致；若与参考视频末帧冲突，以参考视频可见姿态为准并保持连续`
             : '',
           currentState.endState
             ? `本镜收束状态 endState「${currentState.endState}」`
             : '',
           '本段视频是上一镜整段剧情的自然续写：因果、人物状态、场景逻辑必须接得上，禁止无因无果的跳切',
-          '不要把上一镜整段动作重新演一遍；上一镜负责「整段剧情语境 + 收束状态」，本镜新内容以 image1 拼图与本镜文案为准',
+          '不要把上一镜整段动作重新演一遍；参考视频只负责开场衔接，本镜新内容以 image1 拼图与本镜文案为准',
         ].filter(Boolean)
       : currentState.startState || currentState.endState
         ? [
@@ -591,6 +629,8 @@ export async function POST(request: NextRequest) {
       console.log('[Video Reference] previous scene continuity:', {
         sceneNumber: previousScene.sceneNumber,
         hasSheet: Boolean(previousScene.sheetUrl),
+        hasVideo: Boolean(previousScene.videoUrl || previousVideoUrl),
+        hasTailClip: Boolean(continuityTailUrl),
         title: previousScene.title,
         hasDescription: Boolean(previousScene.description),
         hasAction: Boolean(previousScene.action),
@@ -609,10 +649,11 @@ export async function POST(request: NextRequest) {
 
     const result = await generateVideoFromReferenceImages(orderedPrompt, allRefs, {
       model: DEFAULT_VIDEO_MODEL,
-      duration: Math.min(15, Math.max(4, Number(duration) || 6)),
+      duration: Math.min(15, Math.max(4, Number(duration) || 5)),
       ratio: ratio === '9:16' ? '9:16' : '16:9',
       resolution: '720p',
       generateAudio: true,
+      ...(continuityTailUrl ? { referenceVideoUrls: [continuityTailUrl] } : {}),
     })
 
     // 落库视频

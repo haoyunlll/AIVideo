@@ -92,6 +92,9 @@ export interface ParsedScene {
   lastFrameDescription?: string
   continuity?: string
   transition?: string
+  /** 最优时长（秒），默认 4–5 */
+  durationSec?: number
+  durationMs?: number
   shotSegments?: ShotSegmentSimple[]
 }
 

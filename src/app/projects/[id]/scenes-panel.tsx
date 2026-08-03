@@ -73,6 +73,8 @@ interface Scene {
     startState?: string
     endState?: string
     continuity?: string
+    /** 最优视频时长（秒），分析时由 LLM 给出，通常 4–5 */
+    duration?: number
   } | null
 }
 
@@ -223,7 +225,7 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     characterAppearances: {} as Record<string, string> // characterId -> appearanceId
   })
   const [videoGenerateFormData, setVideoGenerateFormData] = useState({
-    duration: 6,
+    duration: 5,
     dialogue: "",
     action: "",
     emotion: "",
@@ -238,7 +240,7 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
   const [referenceSheetUrl, setReferenceSheetUrl] = useState<string | null>(null)
   const [generatingKeyframeIndex, setGeneratingKeyframeIndex] = useState<number | null>(null)
   const [generatingAllKeyframes, setGeneratingAllKeyframes] = useState(false)
-  const [referenceDuration, setReferenceDuration] = useState(6)
+  const [referenceDuration, setReferenceDuration] = useState(5)
   const [referenceRatio, setReferenceRatio] = useState<"16:9" | "9:16">("16:9")
 
   // 分镜列表刷新后，对话框内回显该分镜已保存的拼图
@@ -523,7 +525,7 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
 
     setSelectedScene(scene)
     setVideoGenerateFormData({
-      duration: 6, // 默认6秒
+      duration: 5, // 默认5秒（分析最优 4–5）
       dialogue: scene.dialogue || "",
       action: scene.action || "",
       emotion: scene.emotion || "",
@@ -592,7 +594,9 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     setReferenceScene(latest)
     setReferenceFrames(Array(VIDEO_REFERENCE_FRAME_COUNT.recommended).fill(null))
     setReferenceSheetUrl(latest.metadata?.referenceSheetUrl || null)
-    setReferenceDuration(Math.min(maxVideoDuration, Math.max(4, 6)))
+    const planned =
+      typeof latest.metadata?.duration === 'number' ? latest.metadata.duration : 5
+    setReferenceDuration(Math.min(maxVideoDuration, Math.max(4, planned)))
     setReferenceRatio("16:9")
     setReferenceDialogOpen(true)
   }
@@ -721,11 +725,12 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
     setGeneratingVideo(referenceScene.id)
     setReferenceDialogOpen(false)
 
-    // 上一镜拼图：优先用分镜 metadata 里已存的 referenceSheetUrl
+    // 上一镜：拼图 + 成片（服务端会裁末尾约 2s 作参考视频）
     const prevScene = scenes
       .filter((s) => s.sceneNumber < referenceScene.sceneNumber)
       .sort((a, b) => b.sceneNumber - a.sceneNumber)[0]
     const previousSheetUrl = prevScene?.metadata?.referenceSheetUrl || undefined
+    const previousVideoUrl = prevScene?.videoUrl || undefined
 
     try {
       const res = await fetch("/api/generate/videos/reference", {
@@ -742,14 +747,17 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
           action: referenceScene.action,
           emotion: referenceScene.emotion,
           ...(previousSheetUrl ? { previousSheetUrl } : {}),
+          ...(previousVideoUrl ? { previousVideoUrl } : {}),
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "多模态参考视频生成失败")
       toast.success(
-        prevScene
-          ? `已生成视频（已承接第 ${prevScene.sceneNumber} 镜整段剧情）`
-          : "已用分解拼图生成视频"
+        previousVideoUrl
+          ? `已生成视频（已用第 ${prevScene.sceneNumber} 镜末尾约 2 秒衔接）`
+          : prevScene
+            ? `已生成视频（已承接第 ${prevScene.sceneNumber} 镜整段剧情）`
+            : "已用分解拼图生成视频"
       )
       onUpdate()
     } catch (error) {
@@ -1485,7 +1493,7 @@ export function ScenesPanel({ projectId, scenes, characters, onUpdate, onScriptS
                 AI 分解图生成视频
               </DialogTitle>
               <DialogDescription>
-                主流程：AI 生成故事流拼图 → 用拼图直接出视频。下一镜会带上上一镜整段剧情文案与整张拼图，按完整故事因果承接，而不是只锁末格一秒。
+                主流程：AI 生成故事流拼图 → 用拼图直接出视频。下一镜会自动带上上一镜整段剧情，并裁切上一镜成片末尾约 2 秒作为参考视频做开场衔接。
               </DialogDescription>
             </DialogHeader>
 
@@ -1756,7 +1764,7 @@ function SceneForm({
           id="scene-action"
           value={formData.action}
           onChange={(e) => setFormData({ ...formData, action: e.target.value })}
-          placeholder="起态→过程→终态，如：冲刺中右手反握出鞘约30%→继续前冲抽剑→出鞘约70%"
+          placeholder="起态→过程→终态；过程要写招式，如：右肩蓄力→自右上向左下斜劈→落至左前方收势"
         />
       </div>
       <div className="space-y-2">
@@ -1913,27 +1921,22 @@ function SceneCard({
     }
   }
 
-  // 计算预估视频时长（秒）
+  // 优先用分析时 LLM 给出的最优时长（通常 4–5 秒）
   const calculateDuration = () => {
-    let duration = 4; // 基础4秒
+    if (typeof scene.metadata?.duration === 'number' && scene.metadata.duration >= 4) {
+      return Math.min(Math.max(Math.round(scene.metadata.duration), 4), maxVideoDuration)
+    }
+    let duration = 5 // 默认 5 秒
 
-    // 根据对白长度计算
     if (scene.dialogue) {
-      const len = scene.dialogue.length;
-      if (len > 50) duration += 4;
-      else if (len > 30) duration += 3;
-      else if (len > 15) duration += 2;
-      else if (len > 0) duration += 1;
+      const len = scene.dialogue.length
+      if (len > 30) duration = 5
+      else if (len > 0) duration = 4
     }
 
-    // 有动作描述增加时长
-    if (scene.action && scene.action.length > 20) duration += 2;
-    else if (scene.action && scene.action.length > 0) duration += 1;
+    if (scene.action && scene.action.length > 80) duration = 5
 
-    // 场景描述很长时也增加时长
-    if (scene.description && scene.description.length > 100) duration += 1;
-
-    return Math.min(Math.max(duration, 4), maxVideoDuration);
+    return Math.min(Math.max(duration, 4), maxVideoDuration)
   }
 
   const estimatedDuration = calculateDuration();

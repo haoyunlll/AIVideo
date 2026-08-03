@@ -1,3 +1,6 @@
+# Keep local only (do not push)
+README.md
+
 # Dependencies
 node_modules/
 .pnp

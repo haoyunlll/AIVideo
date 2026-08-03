@@ -109,6 +109,8 @@ interface Scene {
     startState?: string
     endState?: string
     continuity?: string
+    /** 最优视频时长（秒），分析时由 LLM 给出，通常 4–5 */
+    duration?: number
   } | null
 }
 

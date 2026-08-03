@@ -8,8 +8,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { twoPhaseAnalyze, AnalyzeResult, GlobalScanResult } from "@/lib/script-analyzer"
 import { generateId } from "@/lib/memory-storage"
-import { ShotSegment, generateSeedancePrompt, calculateSceneDuration } from "@/lib/types"
-import { buildStateMetadataFields } from "@/lib/scene-continuity"
+import { ShotSegment, generateSeedancePrompt } from "@/lib/types"
+import { buildStateMetadataFields, buildDurationMetadataFields, normalizeSceneDurationSec } from "@/lib/scene-continuity"
 
 // 增加超时配置 - Next.js API 路由最大执行时间
 export const maxDuration = 300 // 5分钟
@@ -229,7 +229,7 @@ async function saveResults(
   style?: string
 ): Promise<{ savedCharacterIds: string[]; savedSceneIds: string[] }> {
   const { memoryCharacters, memoryScenes, generateId } = await import('@/lib/memory-storage')
-  const { generateSeedancePrompt, calculateSceneDuration, ShotSegment } = await import('@/lib/types')
+  const { generateSeedancePrompt, ShotSegment } = await import('@/lib/types')
 
   const savedCharacterIds: string[] = []
   const savedSceneIds: string[] = []
@@ -335,8 +335,12 @@ async function saveResults(
 
     // 创建默认 shotSegments
     let shotSegments = scene.shotSegments
+    const durationSec = normalizeSceneDurationSec(
+      scene.durationSec ??
+        (scene.durationMs ? Math.round(Number(scene.durationMs) / 1000) : undefined)
+    )
     if (!shotSegments || shotSegments.length === 0) {
-      const duration = scene.durationMs || calculateSceneDuration({ dialogue: scene.dialogue })
+      const duration = scene.durationMs || durationSec * 1000
       shotSegments = [
         {
           startTimeMs: 0,
@@ -375,10 +379,11 @@ async function saveResults(
             lastFrameDescription: scene.lastFrameDescription,
             transition: scene.transition,
             shotId: scene.shotId || scene.sceneNumber,
-            durationMs: scene.durationMs,
+            durationMs: durationSec * 1000,
             emotionNote: scene.emotionNote,
             continuity: scene.continuity,
             ...buildStateMetadataFields(scene),
+            ...buildDurationMetadataFields(durationSec),
           },
           status: 'pending',
         })
@@ -412,8 +417,9 @@ async function saveResults(
           shotSegments,
           firstFrameNeeded: true,
           lastFrameNeeded: true,
-          durationMs: scene.durationMs,
+          durationMs: durationSec * 1000,
           ...buildStateMetadataFields(scene),
+          ...buildDurationMetadataFields(durationSec),
         },
       })
       savedSceneIds.push(sceneId)

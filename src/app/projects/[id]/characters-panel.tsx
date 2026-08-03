@@ -827,7 +827,7 @@ export function CharactersPanel({ projectId, characters, onUpdate }: CharactersP
               添加人物
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
             <DialogHeader>
               <DialogTitle>添加人物</DialogTitle>
               <DialogDescription>
@@ -936,7 +936,7 @@ export function CharactersPanel({ projectId, characters, onUpdate }: CharactersP
 
         {/* 编辑对话框 */}
         <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-          <DialogContent>
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
             <DialogHeader>
               <DialogTitle>编辑人物</DialogTitle>
               <DialogDescription>
@@ -1194,7 +1194,7 @@ function CharacterForm({
   submitText: string
 }) {
   return (
-    <div className="space-y-4 mt-4">
+    <div className="space-y-4 mt-4 min-h-0 overflow-y-auto">
       <div className="space-y-2">
         <Label htmlFor="char-name">人物名称 *</Label>
         <Input
@@ -1220,7 +1220,7 @@ function CharacterForm({
           value={formData.appearance}
           onChange={(e) => setFormData({ ...formData, appearance: e.target.value })}
           placeholder="详细描述外貌特征：发型、眼睛、体型、服装风格等"
-          className="min-h-[80px]"
+          className="h-40 min-h-40 max-h-40 resize-none overflow-y-auto field-sizing-fixed"
         />
         <p className="text-xs text-muted-foreground">
           外貌描述越详细，生成的人物形象越一致
@@ -1233,6 +1233,7 @@ function CharacterForm({
           value={formData.personality}
           onChange={(e) => setFormData({ ...formData, personality: e.target.value })}
           placeholder="描述人物的性格特征"
+          className="h-24 min-h-24 max-h-24 resize-none overflow-y-auto field-sizing-fixed"
         />
       </div>
       <div className="flex justify-end gap-3 pt-4">

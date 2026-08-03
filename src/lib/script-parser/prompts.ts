@@ -2,7 +2,7 @@
  * 两阶段剧本解析 - 提示词模板
  */
 
-import { SCENE_STATE_CONTINUITY_RULES } from '@/lib/scene-continuity'
+import { SCENE_STATE_CONTINUITY_RULES, SCENE_ACTION_CHOREOGRAPHY_RULES, SCENE_DURATION_RULES } from '@/lib/scene-continuity'
 
 // ==================== 第一阶段：全局扫描 ====================
 
@@ -132,7 +132,7 @@ ${chunkContent}
       "durationSec": 数字,
       "description": "详细画面描述（50-120字），包含环境、光影、构图、氛围。用于后续视频生成参考图，必须包含具体视觉元素",
       "dialogue": "对白内容（如有），格式：角色名：\\"对白内容\\"",
-      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "action": "起态→过程→终态；过程必须含招式级动作（斜劈/直刺/横扫等）与轨迹发力，禁止只写攻击/挥剑",
       "startState": "本镜开场身体与持物状态（必须=上一镜 endState）",
       "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
       "continuity": "与上一镜的具体过渡（禁止只写硬切）",
@@ -140,20 +140,21 @@ ${chunkContent}
       "characters": ["出场角色名称"],
       "shotType": "景别（远景/全景/中景/近景/特写）",
       "cameraMovement": "镜头运动（固定/推镜/拉镜/摇镜/跟拍/升降）",
-      "durationNote": "时长说明（为什么是这个时长，如'对白25字≈7.5s+缓冲2.5s=10s' 或 '纯空镜建立氛围6s'）"
+      "durationSec": "本镜最优视频时长秒数（整数，默认4或5，通常4-5，硬上限12）",
+      "durationNote": "时长说明（如'单招斜劈约5s' 或 '短对白12字≈4s'）"
     }
   ]
 }
 
 ## 分镜拆分核心规则
 
-### 时长规则（重要！视频模型限制单分镜≤${maxDurationPerShotSec}秒）
-1. 纯空镜/简单动作：6-8秒
-2. 有台词：台词字数×0.3秒 + 2秒缓冲，向下取整
-3. 复杂动作链：8-12秒
-4. **绝对不超过 ${maxDurationPerShotSec} 秒**
-5. 如果内容超过 ${maxDurationPerShotSec} 秒能承载的量，拆分为多个分镜
-6. 在 durationNote 字段中简要说明时长计算依据
+### 时长规则（最优 4–5 秒！硬上限 ${maxDurationPerShotSec} 秒）
+1. **默认每个分镜 4 或 5 秒**，按内容估算最优 durationSec
+2. 纯空镜/简单动作：4 秒
+3. 有短台词或单招动作：5 秒
+4. 装不进 5 秒 → **拆成多个分镜**，不要拉到 8–12 秒
+5. **绝对不超过 ${maxDurationPerShotSec} 秒**
+6. 在 durationNote 字段中简要说明为何是这个时长
 
 ### 叙事规则
 1. 环境的建立（开篇、地点切换）必须单独设立分镜
@@ -175,6 +176,12 @@ ${chunkContent}
 
 ### 镜间身体状态接力（最高优先级）
 ${SCENE_STATE_CONTINUITY_RULES}
+
+### 动作编排描写（最高优先级）
+${SCENE_ACTION_CHOREOGRAPHY_RULES}
+
+### 最优时长（最高优先级）
+${SCENE_DURATION_RULES}
 - 若上方「当前场景」中给出了上一镜摘要，本块第一镜 startState 必须承接该摘要的收束状态
 
 ### 编号规则
@@ -226,6 +233,7 @@ export interface Phase2Scene {
   startState?: string
   endState?: string
   continuity?: string
+  durationSec?: number
   emotion: string
   characters: string[]
   shotType: string

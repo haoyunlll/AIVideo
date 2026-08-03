@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { invokeLLM, invokeLLMWithStream, parseLLMJson, extractHeaders, DEFAULT_LLM_MODEL, getServerAIConfig, getUserLLMConfig } from "@/lib/ai"
 import { invokeCozeDirect, getCozeDirectConfig } from "@/lib/ai/coze-direct"
 import { memoryCharacters, memoryScenes, generateId } from "@/lib/memory-storage"
-import { SCENE_STATE_CONTINUITY_RULES, buildStateMetadataFields } from "@/lib/scene-continuity"
+import { SCENE_STATE_CONTINUITY_RULES, SCENE_ACTION_CHOREOGRAPHY_RULES, SCENE_DURATION_RULES, buildStateMetadataFields, buildDurationMetadataFields } from "@/lib/scene-continuity"
 
 // 增加超时配置 - Next.js API 路由最大执行时间
 export const maxDuration = 300 // 5分钟
@@ -99,10 +99,11 @@ export async function POST(request: NextRequest) {
       "title": "分镜标题",
       "description": "场景画面描述（详细描述环境、光线、构图，用于生成视频分镜参考图）",
       "dialogue": "对白内容",   // 某人物："..."  或  旁白（画外音）："..."
-      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "action": "起态→过程→终态；过程必须含招式级动作（斜劈/直刺/横扫等）与轨迹发力，禁止只写攻击/挥剑",
       "startState": "本镜开场身体与持物状态（必须等于上一镜 endState）",
       "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
       "continuity": "与上一镜的具体过渡（禁止只写硬切）",
+      "durationSec": "本镜最优视频时长秒数（整数，默认4或5，通常4-5，硬上限12）",
       "emotion": "情绪氛围（如：紧张、温馨、悲伤）",
       "shotType": "景别（如：远景、全景、中景、近景、特写）",
       "cameraMovement": "镜头运动（如：固定、推镜、拉镜、摇镜、跟拍）",
@@ -115,17 +116,18 @@ export async function POST(request: NextRequest) {
 
 ### 1. 基于内容适配的分镜策略
 - **内容决定数量**：完全摒弃一般的固定范围。分镜数量应由**剧情密度、情感层次和场景转换频率**自然决定。对于氛围浓厚、细节丰富的文学性故事，分镜数量应**大幅增加**，可能达到25-40个或更多，以确保每一处重要的情感、环境和细节都有其呈现空间。
-- **时长服务于情绪**：单个分镜时长（3-8秒）是参考，**不是铁律**。对于需要营造氛围的空镜（如晨曦、晚霞）、复杂的动作序列、或包含深度情绪的特写，时长可延长至**8-12秒甚至更长**。关键是为"情绪"和"信息"留出足够的消化时间。
+- **时长服务于节奏**：单个分镜**最优 4–5 秒**。装不下就拆镜，不要默认拉到 8–12 秒。
+- 氛围空镜、复杂招式链：优先拆成多个 4–5 秒分镜，而不是合并成长镜头。
 
 ### 2. 针对本文本类型的特殊处理规则
 
 #### 环境与氛围独立成镜
-- 开篇定调的环境描写（如"青溪镇的春天，鸟鸣晨光"）**必须单独设立分镜**，时长可适当放长（5-8秒），用于建立故事基调。
+- 开篇定调的环境描写（如"青溪镇的春天，鸟鸣晨光"）**必须单独设立分镜**，时长优先 **4–5 秒**，用于建立故事基调。
 - 重要的时间节点画面（如"晨曦"、"夜幕降临"）应作为独立分镜。
 
 #### 心理活动视觉化与时间分配
 - 人物的关键回忆（如师父去世、临终教诲）和深度思考，**不应简单合并**。
-- 应转化为闪回片段或通过人物表演（长时间沉默、特定表情）来体现，给予单独分镜或显著延长所在分镜的时长。
+- 应转化为闪回片段或通过人物表演（沉默、特定表情）来体现，给予单独分镜；单镜仍控制在 4–5 秒，过长则拆。
 
 #### 日常动作的分解
 - 为了建立真实的生活感和人物节奏，连续的日常动作（如"醒来-发呆-洗漱-检查货柜"）**可以拆分为多个分镜**，而不是合并为一个。
@@ -140,9 +142,9 @@ export async function POST(request: NextRequest) {
 #### 放弃硬性数量限制
 请根据文本的实际内容，拆分出足够多的分镜，以确保故事连贯、氛围饱满、细节不丢失。预计分镜数量可能在**30个以上**。
 
-#### 优先保障叙事连贯性
-- 不必拘泥于每个分镜3-8秒的硬性约束。
-- 对于氛围镜头、情感高潮和复杂对话，允许延长单镜时长。
+#### 优先保障叙事连贯与 4–5 秒节奏
+- 每个分镜写出 \`durationSec\`（最优秒数），默认 **4 或 5**。
+- 内容装不进 5 秒就拆镜，不要靠拉长时长硬塞。
 
 #### 完整呈现关键段落
 必须为以下内容分配足够的分镜和时间：
@@ -152,20 +154,24 @@ export async function POST(request: NextRequest) {
 4. 结尾的沉思/独处场景
 
 ### 4. 核心目标
-你的目标是生成一个**连贯、细腻、不赶时间**的视觉化分镜脚本，而不是一个高度压缩的提要。每个分镜都应该是故事叙述的有机组成部分，让观众能够沉浸在故事世界中。
+你的目标是生成一个**连贯、细腻、节奏紧凑**的视觉化分镜脚本：一镜一事、单镜约 4–5 秒，而不是高度压缩的提要，也不是超长单镜。
 
 ### 5. 镜间动作与身体状态衔接（必须遵守）
 相邻分镜必须「动作接力」，避免硬切跳戏：
 - **上一镜的 endState** = 下一镜的 startState。物理状态必须一致（握姿、出鞘进度、站姿/冲刺、朝向）。
-- \`action\` 必须写成「起态→过程→终态」，第一句承接上一镜收束；禁止只写「拔剑」「冲刺」等空泛词。
-- \`description\` 开场需保持人物站位、朝向、持物、情绪连续；若必须换景/跳切，在 continuity 里写清过渡，禁止无交代地瞬移或换握姿。
+- \`action\` 必须写成「起态→过程→终态」，过程段必须是招式级描写（斜劈/直刺/横扫等），禁止只写「拔剑」「挥剑」「攻击」。
+- \`description\` 开场需保持人物站位、朝向、持物、情绪连续，并写出可见招式瞬间；若必须换景/跳切，在 continuity 里写清过渡，禁止无交代地瞬移或换握姿。
 - 同一空间连续镜头：视线与身体朝向要顺；对话反应镜要从上一镜说话人的落点接到听者反应。
 
 ${SCENE_STATE_CONTINUITY_RULES}
 
+${SCENE_ACTION_CHOREOGRAPHY_RULES}
+
+${SCENE_DURATION_RULES}
+
 注意：
 1. 分镜数量根据内容合理拆分，具体根据对话量和场景复杂度调整
-2. 每个场景应该是一个独立的视频分镜
+2. 每个场景应该是一个独立的视频分镜，并给出 durationSec
 3. 场景描述要详细，包含视觉元素、光影效果
 4. 人物外貌描述要具体，便于生成角色造型图
 5. 景别和镜头运动要符合影视剧拍摄规范
@@ -306,6 +312,7 @@ ${SCENE_STATE_CONTINUITY_RULES}
           startState?: string
           endState?: string
           continuity?: string
+          durationSec?: number
           emotion: string
           shotType: string
           cameraMovement: string
@@ -547,6 +554,9 @@ ${SCENE_STATE_CONTINUITY_RULES}
                   shotType: scene.shotType,
                   cameraMovement: scene.cameraMovement,
                   ...buildStateMetadataFields(scene),
+                  ...buildDurationMetadataFields(
+                    (scene as { durationSec?: number }).durationSec
+                  ),
                 },
                 status: 'pending',
               }
@@ -584,6 +594,9 @@ ${SCENE_STATE_CONTINUITY_RULES}
                 shotType: scene.shotType,
                 cameraMovement: scene.cameraMovement,
                 ...buildStateMetadataFields(scene),
+                ...buildDurationMetadataFields(
+                  (scene as { durationSec?: number }).durationSec
+                ),
               },
             })
           }

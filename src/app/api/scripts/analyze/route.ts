@@ -4,7 +4,7 @@ import { getStylePrompt } from "@/lib/styles"
 import { runPhase1 } from "@/lib/script-parser"
 import { chunkScript } from "@/lib/script-parser"
 import type { Phase1Character } from "@/lib/script-parser"
-import { SCENE_STATE_CONTINUITY_RULES, buildStateMetadataFields } from "@/lib/scene-continuity"
+import { SCENE_STATE_CONTINUITY_RULES, SCENE_ACTION_CHOREOGRAPHY_RULES, SCENE_DURATION_RULES, buildStateMetadataFields, buildDurationMetadataFields } from "@/lib/scene-continuity"
 
 // 风格描述映射
 const styleDescriptions = Object.freeze({
@@ -193,10 +193,11 @@ ${existingCharacters?.length > 0
       "title": "分镜标题",
       "description": "场景画面描述（详细描述环境，光线、构图，用于生成视频分镜参考图）",
       "dialogue": "对白内容",
-      "action": "起态→过程→终态的动作描写（必须含握姿/出鞘进度等可核对细节）",
+      "action": "起态→过程→终态；过程必须含招式级动作（斜劈/直刺/横扫等）与轨迹发力，禁止只写攻击/挥剑",
       "startState": "本镜开场身体与持物状态（必须等于上一镜 endState）",
       "endState": "本镜收束身体与持物状态（供下一镜 startState 接力）",
       "continuity": "与上一镜的具体过渡（禁止只写硬切）",
+      "durationSec": "本镜最优视频时长秒数（整数，默认4或5，通常4-5，硬上限12）",
       "emotion": "情绪氛围",
       "shotType": "景别（远景、全景、中景、近景、特写）",
       "cameraMovement": "镜头运动（固定、推镜、拉镜、摇镜、跟拍）",
@@ -209,10 +210,10 @@ ${existingCharacters?.length > 0
 
 ### 1. 基于内容适配的分镜策略
 - 内容决定数量，分镜数量由剧情密度、情感层次和场景转换频率决定
-- 单个分镜时长3-12秒，视频模型限制单分镜≤12秒
+- 单个分镜**最优 4–5 秒**；装不下就拆镜，视频模型硬上限≤12秒
 
 ### 2. 环境与氛围独立成镜
-- 开篇环境描写必须单独设立分镜，建立故事基调
+- 开篇环境描写必须单独设立分镜，建立故事基调（仍优先 4–5 秒）
 - 重要时间节点画面应作为独立分镜
 
 ### 3. 心理活动视觉化
@@ -224,20 +225,24 @@ ${existingCharacters?.length > 0
 ### 5. 每个叙事相遇独立呈现
 - 与每个配角的关键互动应视为独立叙事单元
 
-### 6. 优先保障叙事连贯性
-- 为氛围镜头、情感高潮和复杂对话允许延长单镜时长（不超过12秒）
+### 6. 优先保障 4–5 秒节奏
+- 每个分镜必须给出 durationSec；默认 4 或 5；内容过多则拆镜而非拉长
 
 ### 7. 镜间动作与身体状态衔接（必须）
 - 上一镜 endState = 下一镜 startState；物理状态必须一致（握姿、出鞘进度、站姿/冲刺、朝向）
-- action 写成「起态→过程→终态」，第一句承接上一镜收束；禁止空泛「拔剑」
-- description 开场保持人物朝向与空间连续；禁止无过渡瞬移或换握姿
+- action 写成「起态→过程→终态」，过程必须是招式级（斜劈/直刺等），禁止空泛「拔剑」「挥剑」「攻击」
+- description 开场保持人物朝向与空间连续，并写出可见招式瞬间；禁止无过渡瞬移或换握姿
 - 同一空间连续镜要视线顺接
 
 ${SCENE_STATE_CONTINUITY_RULES}
 
+${SCENE_ACTION_CHOREOGRAPHY_RULES}
+
+${SCENE_DURATION_RULES}
+
 注意：
 1. 分镜数量根据内容合理拆分
-2. 每个场景应该是一个独立的视频分镜
+2. 每个场景应该是一个独立的视频分镜，并给出 durationSec
 3. 场景描述要详细，包含视觉元素、光影效果
 4. 人物外貌描述要具体，便于生成角色造型图
 5. 景别和镜头运动要符合影视剧拍摄规范
@@ -348,6 +353,7 @@ ${SCENE_STATE_CONTINUITY_RULES}
                 shotType: scene.shotType || "",
                 cameraMovement: scene.cameraMovement || "",
                 ...buildStateMetadataFields(scene),
+                ...buildDurationMetadataFields(scene.durationSec),
               },
               status: 'pending',
             }
